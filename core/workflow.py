@@ -1,4 +1,6 @@
-from threading import Thread
+from threading import Thread, Event
+import time
+import tkinter as tk
 
 class NodeWorkflow:
     """Manages the collection of nodes and their execution"""
@@ -8,6 +10,9 @@ class NodeWorkflow:
         self.properties_frame = None
         self.active_ollama_node = None
         self.force_recompute = False
+        self.execution_thread = None
+        self.execution_complete_event = Event()
+        self.execution_complete_event.set()  # Initially not executing
     
     def add_node(self, node):
         """Add a node to the workflow"""
@@ -32,56 +37,100 @@ class NodeWorkflow:
                 node.canvas.selected_node = None
                 self.show_node_properties(None)
     
-    def execute_workflow(self):
-        """Execute the entire workflow"""
+    def execute_workflow(self, callback=None):
+        """Execute the entire workflow with a callback when done"""
+        # Don't allow multiple executions at once
+        if self.execution_thread and self.execution_thread.is_alive():
+            return False, "Workflow is already running"
+            
+        # Clear the completion event
+        self.execution_complete_event.clear()
+        
+        # Create and start the execution thread
+        self.execution_thread = Thread(target=self._execute_workflow_thread, args=(callback,), daemon=True)
+        self.execution_thread.start()
+        
+        return True, "Workflow execution started"
+    
+    def _execute_workflow_thread(self, callback=None):
+        """Internal method to execute the workflow in a background thread"""
         # Set force_recompute to ensure all nodes get processed
         original_force_recompute = self.force_recompute
         self.force_recompute = True
         
+        # Set flag to track if any nodes were processed
+        self.node_processed = False
+        
+        result = (False, "No nodes processed")
+        
         try:
-            # Process all nodes
-            nodes_processed = 0
+            # Process all terminal nodes
+            terminal_nodes = self.get_terminal_nodes()
             
-            for node in self.nodes:
-                try:
-                    # Process each node - internally handles dependencies and cycles
-                    result = node.process()
-                    if result:  # If output was generated, count it
-                        nodes_processed += 1
-                except Exception as e:
-                    return False, f"Error executing node {node.title}: {str(e)}"
+            # If no terminal nodes, try to process all nodes
+            if not terminal_nodes:
+                for node in self.nodes:
+                    try:
+                        # Process each node
+                        node.process()
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        result = (False, f"Error executing node {node.title}: {str(e)}")
+                        break
+            else:
+                # Process terminal nodes, which will recursively process inputs
+                for node in terminal_nodes:
+                    try:
+                        # Process each terminal node
+                        node.process()
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        result = (False, f"Error executing node {node.title}: {str(e)}")
+                        break
             
-            if nodes_processed == 0:
-                return False, "No nodes needed processing"
+            # Wait for a short time to allow async nodes to begin processing
+            time.sleep(0.5)
             
-            return True, f"Workflow executed successfully ({nodes_processed} nodes processed)"
+            # Check if nodes are still processing and wait if needed
+            processing_nodes = [node for node in self.nodes if node.processing]
+            if processing_nodes:
+                # Update UI to reflect processing state
+                for node in processing_nodes:
+                    if hasattr(node, 'draw'):
+                        try:
+                            node.draw()
+                        except:
+                            pass
+                
+                # For result message only - we'll still continue
+                result = (True, f"Workflow started ({len(processing_nodes)} nodes processing)")
+                self.node_processed = True
+            
+            # Check if any nodes were processed
+            if self.node_processed:
+                result = (True, f"Workflow executed successfully")
+            else:
+                result = (False, "No nodes needed processing")
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            result = (False, f"Error executing workflow: {str(e)}")
         
         finally:
             # Reset force_recompute
             self.force_recompute = original_force_recompute
-    
-    def execute_workflow_async(self, callback=None):
-        """Execute the workflow asynchronously"""
-        def execute_thread():
-            # Store original value
-            original_force_recompute = self.force_recompute
             
-            # Set force_recompute to ensure all nodes get processed
-            self.force_recompute = True
+            # Set completion event
+            self.execution_complete_event.set()
             
-            # Execute workflow
-            result = self.execute_workflow()
-            
-            # Reset force_recompute
-            self.force_recompute = original_force_recompute
-            
-            # Call callback
+            # Call callback if provided
             if callback:
-                self.root.after(0, lambda: callback(result))
-        
-        thread = Thread(target=execute_thread, daemon=True)
-        thread.start()
-        return thread
+                # Schedule callback on the main thread
+                if hasattr(self.root, 'after'):
+                    self.root.after(0, lambda: callback(result))
     
     def get_terminal_nodes(self):
         """Find nodes with no outgoing connections"""

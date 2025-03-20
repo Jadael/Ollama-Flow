@@ -2,6 +2,9 @@ from core.node import Node
 from core.socket import NodeSocket
 import re
 
+# Register this as a plugin node
+Node.register_node_type(__name__)
+
 class RegexNode(Node):
     """A node that applies a regex pattern to its input text"""
     node_type = "Regex Processor"

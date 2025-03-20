@@ -7,11 +7,21 @@ class Node:
     node_type = "Generic Node"    # Name shown in the UI
     category = "Uncategorized"    # Category for node menu grouping
     
+    # Registry of registered node types
+    _registry = {}
+    
     # Default dimensions
     default_width = 240
     default_height = 180
     min_width = 180
     min_height = 120
+    
+    @classmethod
+    def register_node_type(cls, module_name):
+        """Register this node class with the registry"""
+        from core.node_registry import register_node_type
+        register_node_type(cls)
+        return cls
     
     def __init__(self, canvas, x=100, y=100, title=None, width=None, height=None):
         self.canvas = canvas
@@ -80,20 +90,24 @@ class Node:
         Process this node, getting inputs from connected nodes,
         and returning outputs.
         """
-        # If already processing, don't start again
+        # Update status to show we're working
+        self.status = "Processing..."
+        self.draw()
+        
+        # If already processing, just return cached output or empty dict
         if self.processing:
             return self.output_cache or {}
         
         # If not dirty and we have cached output, return it
         if not self.dirty and self.output_cache and not self.workflow.force_recompute:
+            self.status = "Complete"
+            self.draw()
             return self.output_cache
         
         # Set processing state
         self.processing = True
         self.processing_error = None
         self.processing_complete_event.clear()
-        self.status = "Processing..."
-        self.draw()
         
         try:
             # Wait for all input nodes to complete processing
@@ -110,6 +124,12 @@ class Node:
                 self.dirty = False
                 self.status = "Complete"
                 
+                # Update UI with the complete status
+                self.canvas.after(0, self.draw)
+                
+            # Mark that this node has been processed
+            self.workflow.node_processed = True
+                
             return result
             
         except Exception as e:
@@ -117,6 +137,10 @@ class Node:
             traceback.print_exc()
             self.processing_error = str(e)
             self.status = f"Error: {str(e)[:20]}..."
+            
+            # Update UI with the error status
+            self.canvas.after(0, self.draw)
+            
             return {}
             
         finally:
@@ -124,7 +148,9 @@ class Node:
             if not getattr(self, 'is_async_node', False):
                 self.processing = False
                 self.processing_complete_event.set()
-                self.draw()
+                
+                # Final UI update
+                self.canvas.after(0, self.draw)
     
     def execute(self):
         """
@@ -138,8 +164,13 @@ class Node:
         if hasattr(self.canvas, 'redraw_node'):
             self.canvas.redraw_node(self)
     
-    def wait_for_input_nodes(self, timeout=60, path=None):
-        """Wait for all input nodes to complete processing with cycle detection"""
+    def wait_for_input_nodes(self, timeout=600, path=None):
+        """Wait for all input nodes to complete processing with cycle detection
+        
+        Args:
+            timeout: Timeout in seconds (default: 600 seconds/10 minutes)
+            path: Used internally for cycle detection
+        """
         if path is None:
             path = []
         
@@ -155,24 +186,48 @@ class Node:
         path.append(self)
         
         try:
-            # Collect nodes that are processing
-            processing_nodes = []
+            # First, identify all input nodes that need processing
+            input_nodes = []
             
             for socket in self.inputs:
                 if socket.is_connected():
                     source_node = socket.connected_to.node
-                    
-                    if source_node.processing:
-                        # Check for cycles first
-                        source_node.wait_for_input_nodes(timeout, path.copy())
-                        processing_nodes.append(source_node)
+                    # Only wait for nodes that are actually processing or dirty
+                    if source_node.processing or source_node.dirty:
+                        # Process the input node if it's dirty but not currently processing
+                        if source_node.dirty and not source_node.processing:
+                            # Start processing the node (will handle its own inputs)
+                            source_node.process()
+                        
+                        # Add to list of nodes to wait for
+                        input_nodes.append(source_node)
             
-            # Wait for all processing nodes to complete
+            # Wait for all input nodes to complete - with periodic UI updates
             start_time = time.time()
-            for node in processing_nodes:
-                remaining_timeout = max(0, timeout - (time.time() - start_time))
-                if not node.processing_complete_event.wait(timeout=remaining_timeout):
-                    raise TimeoutError(f"Timed out waiting for input node '{node.title}' to complete")
+            for node in input_nodes:
+                # Poll instead of blocking wait to keep UI responsive
+                while node.processing and time.time() - start_time < timeout:
+                    # Allow the UI to update
+                    if hasattr(self.canvas, 'update_idletasks'):
+                        self.canvas.update_idletasks()
+                    
+                    # Short sleep to prevent CPU spinning
+                    time.sleep(0.1)
+                    
+                    # Update node visuals periodically
+                    if time.time() % 1 < 0.1:  # Update roughly every second
+                        self.draw()
+                        node.draw()
+                
+                # If still processing after timeout
+                if node.processing:
+                    print(f"Warning: Node '{node.title}' is still processing after timeout")
+                    # Don't raise error, just warn and continue
+                
+                # Check for errors
+                if node.processing_error:
+                    print(f"Warning: Error in input node '{node.title}': {node.processing_error}")
+                    # Don't raise error, just warn and continue
         
         finally:
             # Remove this node from the path

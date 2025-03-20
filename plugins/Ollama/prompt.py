@@ -121,12 +121,24 @@ class PromptNode(Node):
                 self.status = "Complete"
                 self.processing = False
                 self.processing_complete_event.set()
-                self.draw()
+                
+                # Mark node as processed in workflow
+                self.workflow.node_processed = True
+                
+                # Update UI
+                if hasattr(self.canvas, 'after'):
+                    self.canvas.after(0, self.draw)
+                
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self.status = f"Error: {str(e)}"
                 self.processing = False
                 self.processing_complete_event.set()
-                self.draw()
+                
+                # Update UI
+                if hasattr(self.canvas, 'after'):
+                    self.canvas.after(0, self.draw)
         
         Thread(target=generation_thread, daemon=True).start()
         

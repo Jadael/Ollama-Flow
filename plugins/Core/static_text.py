@@ -47,3 +47,6 @@ class StaticTextNode(Node):
         min_preview_height = min(text_lines * 20, 100)  # Max 100px for preview
         
         return max(min_height, min_preview_height + self.header_height + 60)
+
+# Register this as a plugin node
+Node.register_node_type(__name__)

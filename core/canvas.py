@@ -1,6 +1,7 @@
 import customtkinter as ctk
 import tkinter as tk
 import math
+from core.node_registry import get_all_node_categories, get_node_class
 
 class NodeCanvas(ctk.CTkCanvas):
     """Canvas widget for drawing and interacting with nodes"""
@@ -32,13 +33,27 @@ class NodeCanvas(ctk.CTkCanvas):
         # Clear the existing menu
         self.context_menu.delete(0, tk.END)
         
-        # Add a command for each node type dynamically
-        for node_class in get_node_subclasses():
-            node_type_name = getattr(node_class, "node_type", node_class.__name__)
-            self.context_menu.add_command(
-                label=f"Add {node_type_name}", 
-                command=lambda cls=node_class: self.add_node_at_cursor(cls)
-            )
+        # Get all node categories
+        node_categories = get_all_node_categories()
+        
+        # Add categories as cascading menus
+        for category, node_classes in node_categories.items():
+            # Skip empty categories
+            if not node_classes:
+                continue
+                
+            # Create submenu for this category
+            category_menu = tk.Menu(self.context_menu, tearoff=0)
+            
+            # Add nodes in this category
+            for node_class in sorted(node_classes, key=lambda cls: cls.node_type):
+                category_menu.add_command(
+                    label=f"Add {node_class.node_type}", 
+                    command=lambda cls=node_class: self.add_node_at_cursor(cls)
+                )
+            
+            # Add submenu to main context menu
+            self.context_menu.add_cascade(label=category, menu=category_menu)
         
         # Add a separator and Delete option
         self.context_menu.add_separator()
@@ -79,6 +94,12 @@ class NodeCanvas(ctk.CTkCanvas):
         
         # Deselect previous node
         if self.selected_node and (not node or node != self.selected_node):
+            # Clean up any canvas items that might be lingering
+            if hasattr(self.selected_node, 'canvas_items'):
+                for item_id in list(self.selected_node.canvas_items):
+                    if not self.type(item_id):  # Check if item still exists
+                        self.selected_node.canvas_items.remove(item_id)
+                        
             self.selected_node.on_deselect()
         
         # Select and handle the clicked node
@@ -97,7 +118,47 @@ class NodeCanvas(ctk.CTkCanvas):
             self.selected_node = None
             # Clear properties panel
             self.workflow.show_node_properties(None)
+            
+        # Clean up any stale canvas items (ghost nodes)
+        self.cleanup_canvas_items()
     
+    def cleanup_canvas_items(self):
+        """Clean up any stale canvas items"""
+        # Get all canvas items
+        all_items = self.find_all()
+        
+        # Check each item
+        for item_id in all_items:
+            # Skip items with no tags
+            if not self.gettags(item_id):
+                continue
+                
+            # Get the tags for this item
+            tags = self.gettags(item_id)
+            
+            # Check if this item belongs to a node
+            node_id = None
+            for tag in tags:
+                # Look for node IDs (UUID format)
+                if len(tag) > 30 and "-" in tag:
+                    node_id = tag
+                    break
+            
+            if node_id:
+                # Check if this node ID still exists in our workflow
+                node_exists = False
+                for node in self.workflow.nodes:
+                    if node.id == node_id:
+                        node_exists = True
+                        # Check if this item is in the node's canvas_items list
+                        if item_id not in node.canvas_items:
+                            node.canvas_items.append(item_id)
+                        break
+                
+                # If no node with this ID exists, delete the item
+                if not node_exists:
+                    self.delete(item_id)
+
     def on_drag(self, event):
         """Handle mouse drag events with improved connection handling"""
         if self.connecting_socket and self.connecting_line:
@@ -541,27 +602,14 @@ class NodeCanvas(ctk.CTkCanvas):
 # Helper functions for the canvas
 def get_node_subclasses():
     """Get all available node types for the context menu"""
-    from core.node import Node
-    import importlib
-    import pkgutil
-    import inspect
-    import sys
-    import os
+    from core.node_registry import get_all_node_categories
     
-    # Dynamically load all plugin modules
+    # Get all node classes from registry
+    node_categories = get_all_node_categories()
+    
+    # Flatten the categories
     node_classes = []
+    for category, classes in node_categories.items():
+        node_classes.extend(classes)
     
-    # Helper function to recursively find all subclasses
-    def find_subclasses(cls):
-        direct_subclasses = cls.__subclasses__()
-        all_subclasses = []
-        for subclass in direct_subclasses:
-            all_subclasses.append(subclass)
-            all_subclasses.extend(find_subclasses(subclass))
-        return all_subclasses
-    
-    # For the minimal implementation, just return the plugins we'll implement
-    from plugins.Core.static_text import StaticTextNode
-    from plugins.Ollama.prompt import PromptNode
-    
-    return [StaticTextNode, PromptNode]
+    return node_classes
