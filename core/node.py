@@ -230,21 +230,24 @@ class Node:
         return create_properties_panel(parent, self)
     
     def get_visible_properties(self):
-        """Get properties that should be visible on the node face"""
+        """Get properties that should be visible on the node face with no truncation"""
         visible_props = {}
         
+        # Add regular properties with no truncation
         if hasattr(self.__class__, 'properties'):
             for name, config in self.__class__.properties.items():
                 ui_config = config.get('ui', {})
                 if ui_config.get('preview_on_node', False):
                     value = getattr(self, name, None)
                     if value is not None:
-                        preview_length = ui_config.get('preview_length', 20)
-                        preview = str(value)
-                        if len(preview) > preview_length:
-                            preview = preview[:preview_length] + "..."
-                        
-                        visible_props[ui_config.get('label', name)] = preview
+                        # Show full value with no truncation
+                        visible_props[ui_config.get('label', name)] = str(value)
+        
+        # Add output cache to visible properties
+        if hasattr(self, 'output_cache') and self.output_cache:
+            for key, value in self.output_cache.items():
+                # Show full output value with no truncation
+                visible_props[f"Output: {key}"] = str(value)
         
         return visible_props
     
@@ -296,26 +299,54 @@ class Node:
         self.resize_start_height = self.height
     
     def calculate_min_height(self):
-        """Calculate minimum height based on content"""
-        height = self.header_height  # Start with header
+        """Calculate minimum height based on content to prevent overflow"""
+        # Base height calculation
+        min_height = self.header_height + self.section_padding * 2
         
-        # Add space for inputs
+        # Add height for inputs
         if self.inputs:
-            height += self.section_padding
-            height += len(self.inputs) * self.socket_spacing
-            height += self.section_spacing  # Space after inputs
+            min_height += 15  # section header
+            min_height += len(self.inputs) * self.socket_spacing
+            min_height += self.section_spacing
         
-        # Add space for outputs
+        # Add height for outputs
         if self.outputs:
-            height += len(self.outputs) * self.socket_spacing
-            height += self.section_spacing  # Space after outputs
+            min_height += 15  # section header
+            min_height += len(self.outputs) * self.socket_spacing
+            min_height += self.section_spacing
         
-        # Add space for properties
+        # Add height for properties section header
         visible_props = self.get_visible_properties()
         if visible_props:
-            height += len(visible_props) * self.property_spacing
+            min_height += 15  # Properties section header
+            
+            # Estimate height for each property
+            for label, value in visible_props.items():
+                # Space for label
+                min_height += 18
+                
+                # Estimate number of lines for value (with a maximum)
+                max_width = self.width - 20
+                words = str(value).split()
+                line_count = 1
+                current_line_width = 0
+                
+                for word in words:
+                    word_width = len(word) * 7  # Approximate character width
+                    if current_line_width + word_width < max_width:
+                        current_line_width += word_width + 7  # Add space
+                    else:
+                        line_count += 1
+                        current_line_width = word_width
+                        if line_count >= 8:  # Limit to 8 lines max
+                            break
+                
+                # Add height for value lines plus spacing
+                min_height += line_count * 18 + 5
         
         # Add space for status
-        height += self.section_padding + 20  # Status height
+        min_height += 30
         
-        return max(height, self.min_height)
+        # Ensure at least minimum height
+        return max(min_height, self.min_height)
+

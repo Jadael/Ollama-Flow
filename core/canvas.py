@@ -99,7 +99,7 @@ class NodeCanvas(ctk.CTkCanvas):
             self.workflow.show_node_properties(None)
     
     def on_drag(self, event):
-        """Handle mouse drag events with resizing support"""
+        """Handle mouse drag events with improved connection handling"""
         if self.connecting_socket and self.connecting_line:
             # Update the temporary connection line
             self.coords(
@@ -131,6 +131,8 @@ class NodeCanvas(ctk.CTkCanvas):
                 self.selected_node.y += dy
                 self.selected_node.drag_start_x = event.x
                 self.selected_node.drag_start_y = event.y
+                
+                # Redraw this node and all connected nodes to update connections properly
                 self.redraw_node(self.selected_node)
     
     def on_release(self, event):
@@ -205,11 +207,28 @@ class NodeCanvas(ctk.CTkCanvas):
         return None
     
     def redraw_node(self, node):
-        """Clear and redraw a node on the canvas"""
-        # Clear any existing items
+        """Clear and redraw a node on the canvas with improved connection handling"""
+        # Track connected nodes so we can redraw them later
+        connected_nodes = set()
+        
+        # Find connected nodes before deletion
+        for socket in node.inputs + node.outputs:
+            if socket.is_connected():
+                connected_socket = socket.connected_to
+                if connected_socket and connected_socket.node:
+                    connected_nodes.add(connected_socket.node)
+        
+        # Delete all items associated with THIS node (not connections yet)
         for item_id in node.canvas_items:
             self.delete(item_id)
         node.canvas_items = []
+        
+        # Delete all connection lines connected to this node
+        for item_id in self.find_withtag("connection"):
+            tags = self.gettags(item_id)
+            for socket in node.inputs + node.outputs:
+                if socket.id in tags:
+                    self.delete(item_id)
         
         # Draw node body
         self._draw_node_body(node)
@@ -226,7 +245,12 @@ class NodeCanvas(ctk.CTkCanvas):
         # Draw node content
         self._draw_node_content(node)
         
-        # Draw connections
+        # Redraw ALL connected nodes to fix all connections
+        for connected_node in connected_nodes:
+            # Only need to redraw connections, not the whole node
+            self._draw_node_connections(connected_node)
+        
+        # Draw connections for this node
         self._draw_node_connections(node)
     
     def _draw_node_body(self, node):
@@ -392,7 +416,7 @@ class NodeCanvas(ctk.CTkCanvas):
         node.canvas_items.append(status_id)
     
     def _draw_node_content(self, node):
-        """Draw node content with property previews in a dedicated section"""
+        """Draw node content with property previews without truncation"""
         # Get visible properties to show on the node
         visible_props = node.get_visible_properties()
         
@@ -422,41 +446,44 @@ class NodeCanvas(ctk.CTkCanvas):
             node.canvas_items.append(section_id)
             y_pos += 15  # Add space after section header
             
-            # Draw properties
+            # Calculate max width for text wrapping
+            max_width = node.width - 20
+            
+            # Draw properties without truncation
             for label, value in visible_props.items():
-                content_id = self.create_text(
+                # Use different color for output properties
+                fill_color = "#5CB85C" if label.startswith("Output:") else "white"
+                
+                # Create the property label (with bold style)
+                label_id = self.create_text(
                     node.x + 10, y_pos,
-                    text=f"{label}: {value}", fill="white", anchor="w",
-                    width=node.width - 20,
-                    tags=("node_content", node.id)
+                    text=f"{label}:", fill=fill_color, anchor="nw",
+                    font=("Helvetica", 10, "bold"),
+                    tags=("node_content", "prop_label", node.id)
                 )
-                node.canvas_items.append(content_id)
-                y_pos += node.property_spacing
-        
-        # Calculate position for output preview
-        output_y = node.y + node.height - 40
-        
-        # Show output preview if available
-        if node.output_cache:
-            for i, (key, value) in enumerate(node.output_cache.items()):
-                if i >= 1:  # Only show first output to save space
-                    break
-                    
-                preview = str(value)
-                if len(preview) > 30:
-                    preview = preview[:27] + "..."
-                    
-                out_id = self.create_text(
-                    node.x + 10, output_y,
-                    text=f"{key}: {preview}", fill="#5CB85C", anchor="w",
-                    width=node.width - 20,
-                    tags=("node_output", node.id)
+                node.canvas_items.append(label_id)
+                y_pos += 18  # Space after label
+                
+                # Get the text bounds to calculate appropriate text wrapping
+                # based on the node width
+                text_value = str(value)
+                wrapped_text = self._wrap_text(text_value, max_width)
+                
+                # Create text for the value - using a single text item with newlines
+                value_id = self.create_text(
+                    node.x + 15, y_pos,
+                    text=wrapped_text, fill=fill_color, anchor="nw",
+                    width=max_width,  # Enable built-in text wrapping
+                    tags=("node_content", "prop_value", node.id)
                 )
-                node.canvas_items.append(out_id)
-                output_y -= 20
+                node.canvas_items.append(value_id)
+                
+                # Calculate height of wrapped text and add spacing
+                line_count = wrapped_text.count('\n') + 1
+                y_pos += line_count * 18 + 10  # Add space after value based on lines
     
     def _draw_node_connections(self, node):
-        """Draw connections to/from this node"""
+        """Draw connections to/from this node with improved cleanup"""
         # Draw connections from output sockets to connected inputs
         for socket in node.outputs:
             if socket.is_connected():
@@ -469,15 +496,46 @@ class NodeCanvas(ctk.CTkCanvas):
                     cx2 = target.position[0] - 50
                     cy2 = target.position[1]
                     
+                    # Create unique tag for this specific connection
+                    connection_tag = f"conn_{socket.id}_{target.id}"
+                    
+                    # Delete any existing connection with the same tag
+                    for item_id in self.find_withtag(connection_tag):
+                        self.delete(item_id)
+                    
                     # Draw the connection line
                     line_id = self.create_line(
                         socket.position[0], socket.position[1],
                         cx1, cy1, cx2, cy2,
                         target.position[0], target.position[1],
                         fill=socket.color, width=2, smooth=True,
-                        tags=("connection", socket.id, target.id)
+                        tags=("connection", socket.id, target.id, connection_tag, node.id)
                     )
                     node.canvas_items.append(line_id)
+
+    def _wrap_text(self, text, width):
+        """Wrap text to fit within width"""
+        # Approximate character width (in pixels)
+        char_width = 7
+        
+        words = text.split()
+        lines = []
+        current_line = ""
+        
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            # Check if adding this word would exceed the width
+            if len(test_line) * char_width <= width:
+                current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        # Join with newlines
+        return "\n".join(lines)
 
 
 # Helper functions for the canvas
