@@ -9,6 +9,7 @@ import time
 import subprocess
 import uuid
 import math
+import copy
 
 class NodeSocket:
     """Represents an input or output connection point on a node"""
@@ -310,11 +311,32 @@ class StaticTextNode(Node):
         
         apply_btn = ctk.CTkButton(frame, text="Apply", command=apply_text)
         apply_btn.pack(pady=10)
+        
+        # Preview button
+        def preview_text():
+            preview_window = ctk.CTkToplevel(self.workflow.root)
+            preview_window.title("Text Preview")
+            preview_window.geometry("600x400")
+            
+            preview_text = ctk.CTkTextbox(preview_window, wrap="word")
+            preview_text.pack(fill="both", expand=True, padx=10, pady=10)
+            preview_text.insert("1.0", self.text)
+            preview_text.configure(state="disabled")
+            
+            copy_btn = ctk.CTkButton(
+                preview_window, 
+                text="Copy to Clipboard",
+                command=lambda: self.workflow.root.clipboard_append(self.text)
+            )
+            copy_btn.pack(pady=10)
+        
+        preview_btn = ctk.CTkButton(frame, text="Preview", command=preview_text)
+        preview_btn.pack(pady=10)
 
 class PromptNode(Node):
     """A node that sends prompts to an LLM and outputs the response"""
     def __init__(self, canvas, x=100, y=100):
-        super().__init__(canvas, x, y, "LLM Prompt", width=240, height=200)
+        super().__init__(canvas, x, y, "LLM Prompt", width=240, height=220)
         
         # Prompt settings
         self.system_prompt = ""
@@ -324,18 +346,40 @@ class PromptNode(Node):
         self.response = ""
         self.stop_event = Event()
         self.current_response = None
+        self.token_count = 0
+        self.start_time = None
+        self.stream_window = None
+        self.stream_text = None
+        self.progress_bar = None
     
     def init_sockets(self):
-        self.inputs.append(NodeSocket(self, is_input=True, name="Input"))
+        self.inputs.append(NodeSocket(self, is_input=True, name="System Prompt"))
+        self.inputs.append(NodeSocket(self, is_input=True, name="User Prompt"))
         self.outputs.append(NodeSocket(self, is_input=False, name="Response"))
     
     def draw(self):
         super().draw()
         
-        # Draw status text
+        # Draw token counter
+        token_id = self.canvas.create_text(
+            self.x + self.width / 2, self.y + self.height - 40,
+            text=f"Tokens: {self.token_count}", fill="#AAA", anchor="center",
+            tags=("node_tokens", self.id)
+        )
+        self.items.append(token_id)
+        
+        # Draw status text with some color coding
+        status_color = "#AAA"  # Default gray
+        if "Generating" in self.status:
+            status_color = "#F0AD4E"  # Orange for active
+        elif "Complete" in self.status:
+            status_color = "#5CB85C"  # Green for complete
+        elif "Error" in self.status:
+            status_color = "#D9534F"  # Red for error
+        
         status_id = self.canvas.create_text(
             self.x + self.width / 2, self.y + self.height - 20,
-            text=f"Status: {self.status}", fill="#AAA", anchor="center",
+            text=f"Status: {self.status}", fill=status_color, anchor="center",
             tags=("node_status", self.id)
         )
         self.items.append(status_id)
@@ -361,7 +405,8 @@ class PromptNode(Node):
     
     def process(self):
         # Get the input text
-        input_text = self.get_input_value("Input")
+        system_input = self.get_input_value("System Prompt")
+        input_text = self.get_input_value("User Prompt")
         
         if not input_text:
             self.status = "No input"
@@ -370,22 +415,150 @@ class PromptNode(Node):
         
         # Clear existing response
         self.response = ""
+        self.token_count = 0
         self.status = "Generating..."
         self.stop_event.clear()
         self.draw()
         
-        # Run in a thread to avoid blocking
-        thread = Thread(target=self.generate_response, args=(input_text,), daemon=True)
-        thread.start()
+        # Show the streaming window
+        self.workflow.root.after(0, lambda: self.show_stream_window(input_text))
         
-        # Wait for the thread to complete (for synchronous processing)
-        thread.join()
+        # Set up an event to signal when processing is complete
+        self.generation_complete = Event()
         
+        # Start generation in a separate thread
+        generate_thread = Thread(target=self.generate_response, args=(input_text,), daemon=True)
+        generate_thread.start()
+        
+        # Make sure UI remains responsive by not waiting for completion
+        # In workflows, we'll return the result we have so far, and other nodes 
+        # will get updates as they become available
         return {"Response": self.response}
+    
+    def show_stream_window(self, input_text):
+        """Show a window with streaming output"""
+        if self.stream_window:
+            try:
+                self.stream_window.destroy()
+            except:
+                pass
+            
+        # Create a new window
+        self.stream_window = ctk.CTkToplevel(self.workflow.root)
+        self.stream_window.title(f"Streaming Output - {self.model}")
+        self.stream_window.geometry("700x500")
+        
+        # Create a frame for the header
+        header_frame = ctk.CTkFrame(self.stream_window)
+        header_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Add info labels
+        ctk.CTkLabel(header_frame, text=f"Model: {self.model}", font=("Arial", 12, "bold")).pack(side="left", padx=10)
+        
+        self.token_label = ctk.CTkLabel(header_frame, text="Tokens: 0")
+        self.token_label.pack(side="right", padx=10)
+        
+        self.time_label = ctk.CTkLabel(header_frame, text="Time: 0.0s")
+        self.time_label.pack(side="right", padx=10)
+        
+        # Add input preview
+        input_frame = ctk.CTkFrame(self.stream_window)
+        input_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(input_frame, text="Input:", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(5, 0))
+        
+        input_preview = ctk.CTkTextbox(input_frame, height=60, wrap="word")
+        input_preview.pack(fill="x", padx=10, pady=5)
+        input_preview.insert("1.0", input_text)
+        input_preview.configure(state="disabled")
+        
+        # Add progress bar
+        self.progress_bar = ctk.CTkProgressBar(self.stream_window)
+        self.progress_bar.pack(fill="x", padx=20, pady=5)
+        self.progress_bar.set(0)
+        
+        # Add output text area
+        output_frame = ctk.CTkFrame(self.stream_window)
+        output_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        ctk.CTkLabel(output_frame, text="Response:", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.stream_text = ctk.CTkTextbox(output_frame, wrap="word")
+        self.stream_text.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        # Add control buttons
+        button_frame = ctk.CTkFrame(self.stream_window)
+        button_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Stop button
+        stop_btn = ctk.CTkButton(
+            button_frame, 
+            text="Stop Generation", 
+            command=self.stop_generation,
+            fg_color="#D9534F"
+        )
+        stop_btn.pack(side="left", padx=10, pady=5)
+        
+        # Copy button
+        copy_btn = ctk.CTkButton(
+            button_frame, 
+            text="Copy to Clipboard",
+            command=lambda: self.workflow.root.clipboard_append(self.response)
+        )
+        copy_btn.pack(side="right", padx=10, pady=5)
+    
+    def stop_generation(self):
+        """Stop the current generation process"""
+        self.stop_event.set()
+        if self.current_response:
+            try:
+                self.current_response.close()
+            except:
+                pass
+        self.status = "Stopped"
+        self.draw()
+        
+        # Update stream window if it exists
+        if self.stream_window and self.stream_window.winfo_exists():
+            if self.time_label:
+                self.time_label.configure(text="Time: Stopped")
+    
+    def update_stream_window(self):
+        """Update the streaming window with current output"""
+        if self.stream_window and self.stream_window.winfo_exists():
+            if self.stream_text:
+                # Update text and autoscroll
+                self.stream_text.delete("1.0", "end")
+                self.stream_text.insert("1.0", self.response)
+                self.stream_text.see("end")
+            
+            if self.token_label:
+                # Update metrics
+                self.token_label.configure(text=f"Tokens: {self.token_count}")
+            
+            if self.time_label and self.start_time:
+                # Update timing
+                elapsed = time.time() - self.start_time
+                self.time_label.configure(text=f"Time: {elapsed:.1f}s")
+                
+                # Update tokens per second if we have tokens
+                if self.token_count > 0 and elapsed > 0:
+                    tps = self.token_count / elapsed
+                    self.token_label.configure(text=f"Tokens: {self.token_count} ({tps:.1f}/s)")
+            
+            # Update progress bar with a pulsing effect
+            if self.progress_bar:
+                progress_value = self.progress_bar.get()
+                if progress_value >= 0.99:
+                    self.progress_bar.set(0)
+                else:
+                    self.progress_bar.set(progress_value + 0.01)
     
     def generate_response(self, user_prompt):
         """Generate a response from the LLM"""
         try:
+            print(f"Starting generation for node {self.id} with prompt: {user_prompt[:50]}...")
+            
             # Prepare API call parameters
             model = self.model
             system_prompt = self.system_prompt
@@ -409,6 +582,10 @@ class PromptNode(Node):
             if system_prompt:
                 payload["system"] = system_prompt
             
+            # Reset counters and start time
+            self.token_count = 0
+            self.start_time = time.time()
+            
             # Make the API call
             self.current_response = requests.post(
                 "http://localhost:11434/api/generate",
@@ -418,12 +595,14 @@ class PromptNode(Node):
             
             if self.current_response.status_code != 200:
                 self.status = f"Error: {self.current_response.status_code}"
-                self.draw()
+                self.workflow.root.after(0, self.draw)
+                print(f"Error from Ollama API: {self.current_response.text}")
                 return
             
             # Process the streaming response
             for line in self.current_response.iter_lines():
                 if self.stop_event.is_set():
+                    print("Generation stopped by user")
                     break
                 
                 if line:
@@ -432,24 +611,43 @@ class PromptNode(Node):
                         if 'response' in data:
                             response_text = data['response']
                             self.response += response_text
+                            self.token_count += 1
                             
-                            # Update status periodically (not on every token)
-                            if len(self.response) % 50 == 0:
-                                self.status = f"Generated: {len(self.response)} chars"
-                                self.draw()
+                            # Update status every few tokens
+                            if self.token_count % 5 == 0:
+                                elapsed = time.time() - self.start_time
+                                tps = self.token_count / elapsed if elapsed > 0 else 0
+                                self.status = f"Generating: {self.token_count} tokens ({tps:.1f}/s)"
+                                self.workflow.root.after(0, self.draw)
+                                self.workflow.root.after(0, self.update_stream_window)
                         
                         # Check for completion
                         if data.get('done', False):
-                            self.status = "Complete"
-                            self.draw()
+                            elapsed = time.time() - self.start_time
+                            tps = self.token_count / elapsed if elapsed > 0 else 0
+                            self.status = f"Complete: {self.token_count} tokens ({tps:.1f}/s)"
+                            self.workflow.root.after(0, self.draw)
+                            self.workflow.root.after(0, self.update_stream_window)
+                            
+                            # Set progress bar to full on completion
+                            if self.progress_bar:
+                                self.workflow.root.after(0, lambda: self.progress_bar.set(1.0))
+                            
+                            print(f"Generation complete: {self.token_count} tokens in {elapsed:.2f}s ({tps:.1f}/s)")
                     
                     except json.JSONDecodeError:
+                        print(f"Error decoding JSON from Ollama API: {line}")
                         self.status = "Error: JSON decode failed"
-                        self.draw()
+                        self.workflow.root.after(0, self.draw)
+            
+            print(f"Finished processing response stream for node {self.id}")
             
         except Exception as e:
+            print(f"Exception in generate_response: {str(e)}")
+            import traceback
+            traceback.print_exc()
             self.status = f"Error: {str(e)[:20]}..."
-            self.draw()
+            self.workflow.root.after(0, self.draw)
         
         finally:
             self.current_response = None
@@ -496,17 +694,7 @@ class PromptNode(Node):
         apply_btn.pack(pady=10)
         
         # Stop button (only relevant if generation is in progress)
-        def stop_generation():
-            self.stop_event.set()
-            if self.current_response:
-                try:
-                    self.current_response.close()
-                except:
-                    pass
-            self.status = "Stopped"
-            self.draw()
-        
-        stop_btn = ctk.CTkButton(frame, text="Stop Generation", command=stop_generation, fg_color="#8B0000")
+        stop_btn = ctk.CTkButton(frame, text="Stop Generation", command=self.stop_generation, fg_color="#D9534F")
         stop_btn.pack(pady=5)
         
         # View Response button
@@ -552,6 +740,7 @@ class NodeCanvas(ctk.CTkCanvas):
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="Add Static Text Node", command=lambda: self.add_node_at_cursor("static_text"))
         self.context_menu.add_command(label="Add Prompt Node", command=lambda: self.add_node_at_cursor("prompt"))
+        self.context_menu.add_command(label="Add Regex Node", command=lambda: self.add_node_at_cursor("regex"))
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Delete Selected Node", command=self.delete_selected_node)
         
@@ -568,6 +757,8 @@ class NodeCanvas(ctk.CTkCanvas):
             node = StaticTextNode(self, x=self.mouse_x, y=self.mouse_y)
         elif node_type == "prompt":
             node = PromptNode(self, x=self.mouse_x, y=self.mouse_y)
+        elif node_type == "regex":
+            node = RegexProcessorNode(self, x=self.mouse_x, y=self.mouse_y)
         else:
             return
         
@@ -814,6 +1005,23 @@ class OllamaFlow(ctk.CTk):
         )
         add_prompt_btn.pack(side="left", padx=5, pady=5)
         
+        add_regex_btn = ctk.CTkButton(
+            toolbar,
+            text="Add Regex Node",
+            command=lambda: self.add_node("regex")
+        )
+        add_regex_btn.pack(side="left", padx=5, pady=5)
+
+        # # Replace manual node addition with dynamic discovery
+        # node_classes = Node.__subclasses__()
+        # for node_class in node_classes:
+        #     button = ctk.CTkButton(
+        #         toolbar,
+        #         text =  f"Add {node_class.__name__}",
+        #         command=lambda cls=node_class: self.add_node(cls)
+        #     )
+        #     button.pack(side="left", padx=5, pady=5)
+
         run_btn = ctk.CTkButton(
             toolbar,
             text="Run Workflow",
@@ -847,6 +1055,8 @@ class OllamaFlow(ctk.CTk):
             node = StaticTextNode(self.node_canvas, x=x, y=y)
         elif node_type == "prompt":
             node = PromptNode(self.node_canvas, x=x, y=y)
+        elif node_type == "regex":
+            node = RegexProcessorNode(self.node_canvas, x=x, y=y)
         else:
             return
         
@@ -857,25 +1067,36 @@ class OllamaFlow(ctk.CTk):
         """Add some example nodes to demonstrate the workflow"""
         # Add a static text node
         static_node = StaticTextNode(self.node_canvas, x=100, y=100)
-        static_node.text = "This is a sample text to test the workflow. It will be sent to the LLM for processing."
+        static_node.text = "Tell me a joke."
         self.workflow.add_node(static_node)
         
+        # Add a regex processor node
+        regex_node = RegexProcessorNode(self.node_canvas, x=400, y=100)
+        self.workflow.add_node(regex_node)
+        
         # Add a prompt node
-        prompt_node = PromptNode(self.node_canvas, x=400, y=200)
-        prompt_node.system_prompt = "You are a helpful AI assistant. Summarize the input text in a concise way."
+        prompt_node = PromptNode(self.node_canvas, x=700, y=200)
+        prompt_node.system_prompt = "You are a helpful assistant."
         self.workflow.add_node(prompt_node)
         
         # Draw the nodes
         static_node.draw()
+        regex_node.draw()
         prompt_node.draw()
         
-        # Connect the static node to the prompt node
+        # Connect the static node to the regex node
         static_output = static_node.outputs[0]
-        prompt_input = prompt_node.inputs[0]
-        static_output.connect(prompt_input)
+        regex_input = regex_node.inputs[0]
+        static_output.connect(regex_input)
         
-        # Redraw the nodes to show the connection
+        # Connect the regex node to the prompt node
+        regex_output = regex_node.outputs[0]
+        prompt_input = prompt_node.inputs[0]
+        regex_output.connect(prompt_input)
+        
+        # Redraw the nodes to show the connections
         static_node.draw()
+        regex_node.draw()
         prompt_node.draw()
     
     def run_workflow(self):
@@ -895,14 +1116,82 @@ class OllamaFlow(ctk.CTk):
             messagebox.showinfo("Run Workflow", "No end nodes found. Connect nodes to create a workflow.")
             return
         
-        # Run each end node
-        for node in end_nodes:
-            result = node.process()
+        # Create a results window that will update during processing
+        results_window = ctk.CTkToplevel(self)
+        results_window.title("Workflow Execution")
+        results_window.geometry("700x500")
+        
+        results_text = ctk.CTkTextbox(results_window, wrap="word")
+        results_text.pack(fill="both", expand=True, padx=10, pady=10)
+        results_text.insert("1.0", "Starting workflow execution...\n\n")
+        
+        progress_frame = ctk.CTkFrame(results_window)
+        progress_frame.pack(fill="x", padx=10, pady=5)
+        
+        progress_bar = ctk.CTkProgressBar(progress_frame)
+        progress_bar.pack(fill="x", padx=10, pady=5, side="left", expand=True)
+        progress_bar.set(0)
+        
+        status_label = ctk.CTkLabel(progress_frame, text="Initializing...")
+        status_label.pack(side="right", padx=10)
+        
+        # Function to update the results window
+        def update_results(text, progress=None, status=None):
+            if not results_window.winfo_exists():
+                return
+                
+            results_text.insert("end", text + "\n")
+            results_text.see("end")
             
-            # Show results in a simple popup for demonstration
-            result_text = "\n\n".join([f"{key}: {value}" for key, value in result.items()])
-            if result_text.strip():
-                self.show_result(node.title, result_text)
+            if progress is not None:
+                progress_bar.set(progress)
+                
+            if status is not None:
+                status_label.configure(text=status)
+                
+            # Force UI update
+            results_window.update_idletasks()
+        
+        # Run each end node in a separate thread
+        def execute_workflow():
+            try:
+                total_nodes = len(end_nodes)
+                
+                update_results("Analyzing workflow dependencies...")
+                
+                # Process each end node
+                for i, node in enumerate(end_nodes):
+                    if not results_window.winfo_exists():
+                        print("Results window closed, aborting workflow execution")
+                        return
+                        
+                    # Calculate progress
+                    progress = (i / total_nodes)
+                    status = f"Processing node {i+1}/{total_nodes}: {node.title}"
+                    update_results(f"\n--- Processing {node.title} ---", progress, status)
+                    
+                    # Process the node - this will trigger processing of all its inputs
+                    try:
+                        # Don't block the UI - process asynchronously using a callback
+                        process_node_async(node, lambda result, node=node: 
+                            update_results(f"Result from {node.title}:\n{result}", 
+                                          (i+1) / total_nodes, 
+                                          f"Completed node {i+1}/{total_nodes}"))
+                    except Exception as e:
+                        update_results(f"Error processing {node.title}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Final update
+                update_results("\nWorkflow execution complete!", 1.0, "Complete")
+                
+            except Exception as e:
+                update_results(f"\nError in workflow execution: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
+        # Start the workflow execution in a background thread
+        Thread(target=execute_workflow, daemon=True).start()
     
     def show_result(self, title, result):
         """Show the result of a workflow execution"""
@@ -920,6 +1209,274 @@ class OllamaFlow(ctk.CTk):
             command=lambda: self.clipboard_append(result)
         )
         copy_btn.pack(pady=10)
+
+
+def process_node_async(node, callback=None):
+    """Process a node asynchronously and call the callback with the result"""
+    def process_thread():
+        try:
+            # Process the node
+            result = node.process()
+            
+            # Format the result
+            result_text = "\n\n".join([f"{key}: {value}" for key, value in result.items()])
+            
+            # Call the callback with the result
+            if callback and result_text.strip():
+                node.workflow.root.after(0, lambda: callback(result_text))
+        except Exception as e:
+            print(f"Error processing node {node.title}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    # Start processing in a background thread
+    thread = Thread(target=process_thread, daemon=True)
+    thread.start()
+    
+    # Return the thread in case we want to monitor it
+    return thread
+
+class RegexProcessorNode(Node):
+    """A node that processes text with regex patterns"""
+    def __init__(self, canvas, x=100, y=100):
+        super().__init__(canvas, x, y, "Regex Processor", width=220, height=180)
+        
+        # Default regex patterns
+        self.patterns = [
+            {"name": "Remove <think> tags", "pattern": r"<think>.*?</think>", "replace": "", "active": True},
+            {"name": "Fix double spaces", "pattern": r"\s{2,}", "replace": " ", "active": True},
+            {"name": "Trim whitespace", "pattern": r"^\s+|\s+$", "replace": "", "active": True}
+        ]
+        
+        # Process stats
+        self.last_input = ""
+        self.last_output = ""
+        self.status = "Ready"
+    
+    def init_sockets(self):
+        self.inputs.append(NodeSocket(self, is_input=True, name="Input"))
+        self.outputs.append(NodeSocket(self, is_input=False, name="Output"))
+    
+    def draw(self):
+        super().draw()
+        
+        # Draw pattern count
+        active_count = sum(1 for p in self.patterns if p["active"])
+        total_count = len(self.patterns)
+        
+        patterns_id = self.canvas.create_text(
+            self.x + 10, self.y + self.header_height + 35,
+            text=f"Patterns: {active_count}/{total_count} active", 
+            fill="white", anchor="w",
+            tags=("node_content", self.id)
+        )
+        self.items.append(patterns_id)
+        
+        # Draw status
+        status_id = self.canvas.create_text(
+            self.x + 10, self.y + self.header_height + 60,
+            text=f"Status: {self.status}", 
+            fill="#AAA", anchor="w",
+            tags=("node_status", self.id)
+        )
+        self.items.append(status_id)
+        
+        # Add a preview of the last operation if available
+        if self.last_input and self.last_output:
+            preview_id = self.canvas.create_text(
+                self.x + 10, self.y + self.header_height + 85,
+                text="Last run: Processed text",
+                fill="#5CB85C", anchor="w",
+                tags=("node_preview", self.id)
+            )
+            self.items.append(preview_id)
+    
+    def process(self):
+        # Get the input text
+        input_text = self.get_input_value("Input")
+        
+        if not input_text:
+            self.status = "No input"
+            self.draw()
+            return {"Output": ""}
+        
+        # Store the input
+        self.last_input = input_text
+        
+        # Apply active regex patterns in sequence
+        output_text = input_text
+        for pattern in self.patterns:
+            if pattern["active"]:
+                try:
+                    output_text = re.sub(pattern["pattern"], pattern["replace"], output_text, flags=re.DOTALL)
+                except Exception as e:
+                    self.status = f"Error: {str(e)[:20]}..."
+                    self.draw()
+                    return {"Output": input_text}  # Return original on error
+        
+        # Store the output
+        self.last_output = output_text
+        
+        # Update status
+        self.status = "Processed"
+        self.draw()
+        
+        return {"Output": output_text}
+    
+    def show_properties(self):
+        super().show_properties()
+        
+        # Create a frame for the regex properties
+        frame = ctk.CTkFrame(self.workflow.properties_frame)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create a scrollable frame for the patterns
+        patterns_label = ctk.CTkLabel(frame, text="Regex Patterns:", font=("Arial", 12, "bold"))
+        patterns_label.pack(anchor="w", padx=10, pady=(10, 5))
+        
+        patterns_frame = ctk.CTkScrollableFrame(frame, height=200)
+        patterns_frame.pack(fill="x", expand=True, padx=10, pady=5)
+        
+        # Add pattern entries
+        pattern_entries = []
+        for i, pattern in enumerate(self.patterns):
+            pattern_frame = ctk.CTkFrame(patterns_frame)
+            pattern_frame.pack(fill="x", padx=5, pady=5)
+            
+            # Pattern active checkbox
+            active_var = ctk.BooleanVar(value=pattern["active"])
+            active_check = ctk.CTkCheckBox(pattern_frame, text="", variable=active_var)
+            active_check.grid(row=0, column=0, padx=5, pady=5)
+            
+            # Pattern name
+            name_var = ctk.StringVar(value=pattern["name"])
+            name_entry = ctk.CTkEntry(pattern_frame, textvariable=name_var, width=150)
+            name_entry.grid(row=0, column=1, padx=5, pady=5)
+            
+            # Pattern entry
+            pattern_var = ctk.StringVar(value=pattern["pattern"])
+            pattern_label = ctk.CTkLabel(pattern_frame, text="Pattern:")
+            pattern_label.grid(row=1, column=0, padx=5, pady=2, sticky="w")
+            pattern_entry = ctk.CTkEntry(pattern_frame, textvariable=pattern_var, width=250)
+            pattern_entry.grid(row=1, column=1, columnspan=2, padx=5, pady=2, sticky="ew")
+            
+            # Replacement entry
+            replace_var = ctk.StringVar(value=pattern["replace"])
+            replace_label = ctk.CTkLabel(pattern_frame, text="Replace:")
+            replace_label.grid(row=2, column=0, padx=5, pady=2, sticky="w")
+            replace_entry = ctk.CTkEntry(pattern_frame, textvariable=replace_var, width=250)
+            replace_entry.grid(row=2, column=1, columnspan=2, padx=5, pady=2, sticky="ew")
+            
+            # Delete button
+            delete_btn = ctk.CTkButton(
+                pattern_frame, 
+                text="×", 
+                width=30, 
+                fg_color="#D9534F",
+                command=lambda idx=i: self.delete_pattern(idx, pattern_entries)
+            )
+            delete_btn.grid(row=0, column=2, padx=5, pady=5)
+            
+            # Store references to entries and variables
+            pattern_entries.append({
+                "frame": pattern_frame,
+                "active_var": active_var,
+                "name_var": name_var,
+                "pattern_var": pattern_var,
+                "replace_var": replace_var,
+                "index": i
+            })
+        
+        # Add a button to add new patterns
+        def add_new_pattern():
+            new_pattern = {
+                "name": "New Pattern", 
+                "pattern": r"", 
+                "replace": "", 
+                "active": True
+            }
+            self.patterns.append(new_pattern)
+            self.show_properties()  # Refresh the panel
+        
+        add_btn = ctk.CTkButton(frame, text="Add Pattern", command=add_new_pattern)
+        add_btn.pack(pady=5)
+        
+        # Add test section
+        test_frame = ctk.CTkFrame(frame)
+        test_frame.pack(fill="x", padx=10, pady=(15, 5))
+        
+        ctk.CTkLabel(test_frame, text="Test Patterns", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=5)
+        
+        test_input = ctk.CTkTextbox(test_frame, height=80, wrap="word")
+        test_input.pack(fill="x", padx=10, pady=5)
+        if self.last_input:
+            test_input.insert("1.0", self.last_input)
+        else:
+            test_input.insert("1.0", "Test text with <think>hidden content</think> and  double  spaces.")
+        
+        # Add test output
+        ctk.CTkLabel(test_frame, text="Result:").pack(anchor="w", padx=10, pady=(5, 0))
+        test_output = ctk.CTkTextbox(test_frame, height=80, wrap="word")
+        test_output.pack(fill="x", padx=10, pady=5)
+        if self.last_output:
+            test_output.insert("1.0", self.last_output)
+        
+        # Test button
+        def test_patterns():
+            input_text = test_input.get("1.0", "end-1c")
+            
+            # Apply active patterns from the current UI state
+            output_text = input_text
+            for entry in pattern_entries:
+                if entry["active_var"].get():
+                    try:
+                        pattern = entry["pattern_var"].get()
+                        replace = entry["replace_var"].get()
+                        output_text = re.sub(pattern, replace, output_text, flags=re.DOTALL)
+                    except Exception as e:
+                        messagebox.showerror("Regex Error", f"Error in pattern '{pattern}': {str(e)}")
+            
+            # Update the output display
+            test_output.delete("1.0", "end")
+            test_output.insert("1.0", output_text)
+        
+        test_btn = ctk.CTkButton(test_frame, text="Test", command=test_patterns)
+        test_btn.pack(pady=5)
+        
+        # Apply button for all changes
+        def apply_changes():
+            # Update patterns from UI
+            new_patterns = []
+            for entry in pattern_entries:
+                if entry["index"] < len(self.patterns):  # Make sure the index is valid
+                    new_patterns.append({
+                        "name": entry["name_var"].get(),
+                        "pattern": entry["pattern_var"].get(),
+                        "replace": entry["replace_var"].get(),
+                        "active": entry["active_var"].get()
+                    })
+            
+            # Update if we have valid patterns
+            if new_patterns:
+                self.patterns = new_patterns
+                self.draw()
+        
+        apply_btn = ctk.CTkButton(frame, text="Apply Changes", command=apply_changes)
+        apply_btn.pack(pady=10)
+    
+    def delete_pattern(self, idx, entries):
+        """Delete a pattern from the list"""
+        if 0 <= idx < len(self.patterns):
+            # Remove from the model
+            self.patterns.pop(idx)
+            
+            # Remove from the UI
+            for entry in entries:
+                if entry["index"] == idx:
+                    entry["frame"].destroy()
+            
+            # Refresh the UI
+            self.show_properties()
 
 def main():
     app = OllamaFlow()
