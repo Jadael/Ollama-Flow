@@ -11,9 +11,11 @@ class PromptNode(Node):
     node_type = "LLM Prompt"
     category = "Ollama"
     
-    # Node dimensions
-    default_width = 240
-    default_height = 220
+    # Node dimensions - increased to accommodate multiple inputs and properties
+    default_width = 280
+    default_height = 260
+    min_width = 240
+    min_height = 200
     
     # Property definitions
     properties = {
@@ -270,18 +272,13 @@ class PromptNode(Node):
         
         return properties_frame
     
-    def contains_point(self, x, y):
-        """Check if a point is inside this node"""
-        return (self.x <= x <= self.x + self.width and
-                self.y <= y <= self.y + self.height)
-    
-    def contains_header(self, x, y):
-        """Check if a point is inside this node's header"""
-        return (self.x <= x <= self.x + self.width and
-                self.y <= y <= self.y + self.header_height)
-    
-    def start_drag(self, x, y):
-        """Start dragging the node"""
-        self.dragging = True
-        self.drag_start_x = x
-        self.drag_start_y = y
+    def calculate_min_height(self):
+        """Calculate minimum height based on content"""
+        # Base height from parent calculation
+        min_height = super().calculate_min_height()
+        
+        # Add space for response preview
+        if self.response:
+            min_height += 40  # Additional space for response preview
+            
+        return max(min_height, self.min_height)

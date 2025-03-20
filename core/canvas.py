@@ -59,7 +59,7 @@ class NodeCanvas(ctk.CTkCanvas):
             self.workflow.delete_node(self.selected_node)
     
     def on_click(self, event):
-        """Handle mouse click events"""
+        """Handle mouse click events with resize handle check"""
         self.mouse_x, self.mouse_y = event.x, event.y
         
         # Check if we clicked on a socket
@@ -86,8 +86,11 @@ class NodeCanvas(ctk.CTkCanvas):
             self.selected_node = node
             node.on_select()
             
+            # Check if we clicked on the resize handle
+            if node.contains_resize_handle(event.x, event.y):
+                node.start_resize(event.x, event.y)
             # Check if we clicked on the header (to drag)
-            if node.contains_header(event.x, event.y):
+            elif node.contains_header(event.x, event.y):
                 node.start_drag(event.x, event.y)
         else:
             # Clicked on empty space
@@ -96,7 +99,7 @@ class NodeCanvas(ctk.CTkCanvas):
             self.workflow.show_node_properties(None)
     
     def on_drag(self, event):
-        """Handle mouse drag events"""
+        """Handle mouse drag events with resizing support"""
         if self.connecting_socket and self.connecting_line:
             # Update the temporary connection line
             self.coords(
@@ -105,18 +108,33 @@ class NodeCanvas(ctk.CTkCanvas):
                 self.connecting_socket.position[1],
                 event.x, event.y
             )
-        elif self.selected_node and hasattr(self.selected_node, 'dragging') and self.selected_node.dragging:
-            # Drag the selected node
-            dx = event.x - self.selected_node.drag_start_x
-            dy = event.y - self.selected_node.drag_start_y
-            self.selected_node.x += dx
-            self.selected_node.y += dy
-            self.selected_node.drag_start_x = event.x
-            self.selected_node.drag_start_y = event.y
-            self.redraw_node(self.selected_node)
+        elif self.selected_node:
+            if self.selected_node.resizing:
+                # Resize the node
+                new_width = max(self.selected_node.resize_start_width + (event.x - self.selected_node.drag_start_x), 
+                                self.selected_node.min_width)
+                new_height = max(self.selected_node.resize_start_height + (event.y - self.selected_node.drag_start_y), 
+                                self.selected_node.min_height)
+                
+                # Update node dimensions
+                self.selected_node.width = new_width
+                self.selected_node.height = new_height
+                
+                # Redraw the node
+                self.redraw_node(self.selected_node)
+                
+            elif self.selected_node.dragging:
+                # Drag the selected node
+                dx = event.x - self.selected_node.drag_start_x
+                dy = event.y - self.selected_node.drag_start_y
+                self.selected_node.x += dx
+                self.selected_node.y += dy
+                self.selected_node.drag_start_x = event.x
+                self.selected_node.drag_start_y = event.y
+                self.redraw_node(self.selected_node)
     
     def on_release(self, event):
-        """Handle mouse release events"""
+        """Handle mouse release events with resizing support"""
         if self.connecting_socket and self.connecting_line:
             # Check if we're over another socket
             target_socket = self.find_socket_at(event.x, event.y)
@@ -142,9 +160,10 @@ class NodeCanvas(ctk.CTkCanvas):
             self.connecting_line = None
             self.connecting_socket = None
         
-        # End any node dragging
-        if self.selected_node and hasattr(self.selected_node, 'dragging'):
+        # End any node dragging or resizing
+        if self.selected_node:
             self.selected_node.dragging = False
+            self.selected_node.resizing = False
     
     def on_motion(self, event):
         """Handle mouse motion events (hover effects)"""
@@ -220,6 +239,28 @@ class NodeCanvas(ctk.CTkCanvas):
             tags=("node", node.id)
         )
         node.canvas_items.append(body_id)
+        
+        # Add resize handle to bottom right corner
+        handle_x = node.x + node.width - node.resize_handle_size
+        handle_y = node.y + node.height - node.resize_handle_size
+        
+        # Draw resize handle lines
+        handle_line1 = self.create_line(
+            handle_x, node.y + node.height,
+            node.x + node.width, handle_y,
+            fill="#888", width=1,
+            tags=("resize_handle", node.id)
+        )
+        node.canvas_items.append(handle_line1)
+        
+        handle_line2 = self.create_line(
+            handle_x + node.resize_handle_size // 2, node.y + node.height,
+            node.x + node.width, handle_y + node.resize_handle_size // 2,
+            fill="#888", width=1,
+            tags=("resize_handle", node.id)
+        )
+        node.canvas_items.append(handle_line2)
+
     
     def _draw_node_header(self, node):
         """Draw the node header with title"""
@@ -239,52 +280,99 @@ class NodeCanvas(ctk.CTkCanvas):
         node.canvas_items.append(title_id)
     
     def _draw_node_sockets(self, node):
-        """Draw input and output sockets"""
-        # Draw input sockets
-        for i, socket in enumerate(node.inputs):
-            y_pos = node.y + node.header_height + node.socket_margin * (i + 1)
-            socket.position = (node.x, y_pos)
-            
-            # Socket circle
-            fill_color = socket.color if socket.hover else "#2a2a2a"
-            socket_id = self.create_oval(
-                socket.position[0] - socket.radius, socket.position[1] - socket.radius,
-                socket.position[0] + socket.radius, socket.position[1] + socket.radius,
-                fill=fill_color, outline="#AAA",
-                tags=("socket", "input_socket", socket.id, node.id)
-            )
-            node.canvas_items.append(socket_id)
-            
-            # Socket label
-            label_id = self.create_text(
-                socket.position[0] + socket.radius + 5, socket.position[1],
-                text=socket.name, fill="white", anchor="w",
-                tags=("socket_label", node.id)
-            )
-            node.canvas_items.append(label_id)
+        """Draw input and output sockets with better organization"""
+        # Calculate vertical starting position
+        y_pos = node.y + node.header_height + node.section_padding
         
-        # Draw output sockets
-        for i, socket in enumerate(node.outputs):
-            y_pos = node.y + node.header_height + node.socket_margin * (i + 1)
-            socket.position = (node.x + node.width, y_pos)
-            
-            # Socket circle
-            fill_color = socket.color if socket.hover else "#2a2a2a"
-            socket_id = self.create_oval(
-                socket.position[0] - socket.radius, socket.position[1] - socket.radius,
-                socket.position[0] + socket.radius, socket.position[1] + socket.radius,
-                fill=fill_color, outline="#AAA",
-                tags=("socket", "output_socket", socket.id, node.id)
+        # Draw "Inputs" section header if there are inputs
+        if node.inputs:
+            section_id = self.create_text(
+                node.x + 10, y_pos,
+                text="INPUTS", fill="#888", anchor="w",
+                font=("Helvetica", 8),
+                tags=("section_header", node.id)
             )
-            node.canvas_items.append(socket_id)
+            node.canvas_items.append(section_id)
+            y_pos += 15  # Add space after section header
             
-            # Socket label
-            label_id = self.create_text(
-                socket.position[0] - socket.radius - 5, socket.position[1],
-                text=socket.name, fill="white", anchor="e",
-                tags=("socket_label", node.id)
+            # Draw input sockets
+            for i, socket in enumerate(node.inputs):
+                socket.position = (node.x, y_pos)
+                
+                # Socket circle
+                fill_color = socket.color if socket.hover else "#2a2a2a"
+                socket_id = self.create_oval(
+                    socket.position[0] - socket.radius, socket.position[1] - socket.radius,
+                    socket.position[0] + socket.radius, socket.position[1] + socket.radius,
+                    fill=fill_color, outline="#AAA",
+                    tags=("socket", "input_socket", socket.id, node.id)
+                )
+                node.canvas_items.append(socket_id)
+                
+                # Socket label
+                label_id = self.create_text(
+                    socket.position[0] + socket.radius + 5, socket.position[1],
+                    text=socket.name, fill="white", anchor="w",
+                    tags=("socket_label", node.id)
+                )
+                node.canvas_items.append(label_id)
+                
+                y_pos += node.socket_spacing
+            
+            # Add section divider
+            y_pos += node.section_spacing - node.socket_spacing
+            divider_id = self.create_line(
+                node.x + 10, y_pos - node.section_spacing // 2,
+                node.x + node.width - 10, y_pos - node.section_spacing // 2,
+                fill="#555", dash=(4, 4),
+                tags=("section_divider", node.id)
             )
-            node.canvas_items.append(label_id)
+            node.canvas_items.append(divider_id)
+        
+        # Draw "Outputs" section if there are outputs
+        if node.outputs:
+            section_id = self.create_text(
+                node.x + 10, y_pos,
+                text="OUTPUTS", fill="#888", anchor="w",
+                font=("Helvetica", 8),
+                tags=("section_header", node.id)
+            )
+            node.canvas_items.append(section_id)
+            y_pos += 15  # Add space after section header
+            
+            # Draw output sockets
+            for i, socket in enumerate(node.outputs):
+                socket.position = (node.x + node.width, y_pos)
+                
+                # Socket circle
+                fill_color = socket.color if socket.hover else "#2a2a2a"
+                socket_id = self.create_oval(
+                    socket.position[0] - socket.radius, socket.position[1] - socket.radius,
+                    socket.position[0] + socket.radius, socket.position[1] + socket.radius,
+                    fill=fill_color, outline="#AAA",
+                    tags=("socket", "output_socket", socket.id, node.id)
+                )
+                node.canvas_items.append(socket_id)
+                
+                # Socket label
+                label_id = self.create_text(
+                    socket.position[0] - socket.radius - 5, socket.position[1],
+                    text=socket.name, fill="white", anchor="e",
+                    tags=("socket_label", node.id)
+                )
+                node.canvas_items.append(label_id)
+                
+                y_pos += node.socket_spacing
+            
+            # Add section divider for properties
+            y_pos += node.section_spacing - node.socket_spacing
+            divider_id = self.create_line(
+                node.x + 10, y_pos - node.section_spacing // 2,
+                node.x + node.width - 10, y_pos - node.section_spacing // 2,
+                fill="#555", dash=(4, 4),
+                tags=("section_divider", node.id)
+            )
+            node.canvas_items.append(divider_id)
     
     def _draw_node_status(self, node):
         """Draw node status information"""
@@ -304,24 +392,52 @@ class NodeCanvas(ctk.CTkCanvas):
         node.canvas_items.append(status_id)
     
     def _draw_node_content(self, node):
-        """Draw node content (property previews, etc.)"""
+        """Draw node content with property previews in a dedicated section"""
         # Get visible properties to show on the node
         visible_props = node.get_visible_properties()
         
-        y_offset = node.y + node.header_height + 10
-        for label, value in visible_props.items():
-            content_id = self.create_text(
-                node.x + 10, y_offset,
-                text=f"{label}: {value}", fill="white", anchor="w",
-                width=node.width - 20,
-                tags=("node_content", node.id)
+        if visible_props:
+            # Calculate y position after inputs and outputs
+            y_pos = node.y + node.header_height + node.section_padding
+            
+            # Skip past inputs section if there are inputs
+            if node.inputs:
+                y_pos += 15  # section header
+                y_pos += len(node.inputs) * node.socket_spacing
+                y_pos += node.section_spacing
+            
+            # Skip past outputs section if there are outputs
+            if node.outputs:
+                y_pos += 15  # section header
+                y_pos += len(node.outputs) * node.socket_spacing
+                y_pos += node.section_spacing
+            
+            # Draw "Properties" section header
+            section_id = self.create_text(
+                node.x + 10, y_pos,
+                text="PROPERTIES", fill="#888", anchor="w",
+                font=("Helvetica", 8),
+                tags=("section_header", node.id)
             )
-            node.canvas_items.append(content_id)
-            y_offset += 20
+            node.canvas_items.append(section_id)
+            y_pos += 15  # Add space after section header
+            
+            # Draw properties
+            for label, value in visible_props.items():
+                content_id = self.create_text(
+                    node.x + 10, y_pos,
+                    text=f"{label}: {value}", fill="white", anchor="w",
+                    width=node.width - 20,
+                    tags=("node_content", node.id)
+                )
+                node.canvas_items.append(content_id)
+                y_pos += node.property_spacing
+        
+        # Calculate position for output preview
+        output_y = node.y + node.height - 40
         
         # Show output preview if available
         if node.output_cache:
-            preview_y = node.y + node.height - 40
             for i, (key, value) in enumerate(node.output_cache.items()):
                 if i >= 1:  # Only show first output to save space
                     break
@@ -331,13 +447,13 @@ class NodeCanvas(ctk.CTkCanvas):
                     preview = preview[:27] + "..."
                     
                 out_id = self.create_text(
-                    node.x + 10, preview_y,
+                    node.x + 10, output_y,
                     text=f"{key}: {preview}", fill="#5CB85C", anchor="w",
                     width=node.width - 20,
                     tags=("node_output", node.id)
                 )
                 node.canvas_items.append(out_id)
-                preview_y -= 20
+                output_y -= 20
     
     def _draw_node_connections(self, node):
         """Draw connections to/from this node"""

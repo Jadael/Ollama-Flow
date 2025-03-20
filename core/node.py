@@ -8,8 +8,10 @@ class Node:
     category = "Uncategorized"    # Category for node menu grouping
     
     # Default dimensions
-    default_width = 220
-    default_height = 150
+    default_width = 240
+    default_height = 180
+    min_width = 180
+    min_height = 120
     
     def __init__(self, canvas, x=100, y=100, title=None, width=None, height=None):
         self.canvas = canvas
@@ -24,12 +26,22 @@ class Node:
         # Styling properties
         self.border_width = 2
         self.header_height = 30
-        self.socket_margin = 20
+        self.resize_handle_size = 15
+        
+        # Section spacing and layout
+        self.section_padding = 10
+        self.section_spacing = 15
+        self.socket_spacing = 25
+        self.property_spacing = 20
         
         # State flags
         self.selected = False
         self.dragging = False
         self.resizing = False
+        self.drag_start_x = 0
+        self.drag_start_y = 0
+        self.resize_start_width = 0
+        self.resize_start_height = 0
         self.dirty = True
         self.processing = False
         
@@ -126,23 +138,46 @@ class Node:
         if hasattr(self.canvas, 'redraw_node'):
             self.canvas.redraw_node(self)
     
-    def wait_for_input_nodes(self, timeout=60):
-        """Wait for all input nodes to complete processing"""
-        input_nodes = []
+    def wait_for_input_nodes(self, timeout=60, path=None):
+        """Wait for all input nodes to complete processing with cycle detection"""
+        if path is None:
+            path = []
         
-        # Collect all connected input nodes
-        for socket in self.inputs:
-            if socket.is_connected():
-                source_node = socket.connected_to.node
-                if source_node.processing:
-                    input_nodes.append(source_node)
+        # Check for cycles
+        if self in path:
+            # Extract node titles for error message
+            cycle_idx = path.index(self)
+            cycle_path = [node.title for node in path[cycle_idx:]] + [self.title]
+            cycle_str = " -> ".join(cycle_path)
+            raise ValueError(f"Cyclic dependency detected: {cycle_str}")
         
-        # Wait for all input nodes to complete
-        start_time = time.time()
-        for node in input_nodes:
-            remaining_timeout = max(0, timeout - (time.time() - start_time))
-            if not node.processing_complete_event.wait(timeout=remaining_timeout):
-                raise TimeoutError(f"Timed out waiting for input node '{node.title}' to complete")
+        # Add this node to the path
+        path.append(self)
+        
+        try:
+            # Collect nodes that are processing
+            processing_nodes = []
+            
+            for socket in self.inputs:
+                if socket.is_connected():
+                    source_node = socket.connected_to.node
+                    
+                    if source_node.processing:
+                        # Check for cycles first
+                        source_node.wait_for_input_nodes(timeout, path.copy())
+                        processing_nodes.append(source_node)
+            
+            # Wait for all processing nodes to complete
+            start_time = time.time()
+            for node in processing_nodes:
+                remaining_timeout = max(0, timeout - (time.time() - start_time))
+                if not node.processing_complete_event.wait(timeout=remaining_timeout):
+                    raise TimeoutError(f"Timed out waiting for input node '{node.title}' to complete")
+        
+        finally:
+            # Remove this node from the path
+            if path and path[-1] == self:
+                path.pop()
     
     def get_input_value(self, input_name):
         """Get the value from a connected input socket, waiting if necessary"""
@@ -228,3 +263,59 @@ class Node:
         """Show property panel for this node"""
         if self.workflow and hasattr(self.workflow, 'show_node_properties'):
             self.workflow.show_node_properties(self)
+            
+    def contains_point(self, x, y):
+        """Check if a point is inside this node"""
+        return (self.x <= x <= self.x + self.width and
+                self.y <= y <= self.y + self.height)
+    
+    def contains_header(self, x, y):
+        """Check if a point is inside this node's header"""
+        return (self.x <= x <= self.x + self.width and
+                self.y <= y <= self.y + self.header_height)
+    
+    def contains_resize_handle(self, x, y):
+        """Check if a point is inside the resize handle"""
+        handle_x = self.x + self.width - self.resize_handle_size
+        handle_y = self.y + self.height - self.resize_handle_size
+        return (handle_x <= x <= self.x + self.width and
+                handle_y <= y <= self.y + self.height)
+    
+    def start_drag(self, x, y):
+        """Start dragging the node"""
+        self.dragging = True
+        self.drag_start_x = x
+        self.drag_start_y = y
+        
+    def start_resize(self, x, y):
+        """Start resizing the node"""
+        self.resizing = True
+        self.drag_start_x = x
+        self.drag_start_y = y
+        self.resize_start_width = self.width
+        self.resize_start_height = self.height
+    
+    def calculate_min_height(self):
+        """Calculate minimum height based on content"""
+        height = self.header_height  # Start with header
+        
+        # Add space for inputs
+        if self.inputs:
+            height += self.section_padding
+            height += len(self.inputs) * self.socket_spacing
+            height += self.section_spacing  # Space after inputs
+        
+        # Add space for outputs
+        if self.outputs:
+            height += len(self.outputs) * self.socket_spacing
+            height += self.section_spacing  # Space after outputs
+        
+        # Add space for properties
+        visible_props = self.get_visible_properties()
+        if visible_props:
+            height += len(visible_props) * self.property_spacing
+        
+        # Add space for status
+        height += self.section_padding + 20  # Status height
+        
+        return max(height, self.min_height)

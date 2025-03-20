@@ -6,6 +6,10 @@ class StaticTextNode(Node):
     node_type = "Static Text"
     category = "Core"
     
+    # Default dimensions - suitable for text content
+    default_width = 260
+    default_height = 200
+    
     # Property definitions
     properties = {
         "text": {
@@ -33,19 +37,13 @@ class StaticTextNode(Node):
         """Process the node and return output values"""
         return {"Text": self.text}
     
-    # Additional methods
-    def contains_point(self, x, y):
-        """Check if a point is inside this node"""
-        return (self.x <= x <= self.x + self.width and
-                self.y <= y <= self.y + self.height)
-    
-    def contains_header(self, x, y):
-        """Check if a point is inside this node's header"""
-        return (self.x <= x <= self.x + self.width and
-                self.y <= y <= self.y + self.header_height)
-    
-    def start_drag(self, x, y):
-        """Start dragging the node"""
-        self.dragging = True
-        self.drag_start_x = x
-        self.drag_start_y = y
+    def calculate_min_height(self):
+        """Calculate minimum height based on content"""
+        # Start with base calculation from parent class
+        min_height = super().calculate_min_height()
+        
+        # Add additional height for text content preview
+        text_lines = len(self.text.split("\n"))
+        min_preview_height = min(text_lines * 20, 100)  # Max 100px for preview
+        
+        return max(min_height, min_preview_height + self.header_height + 60)

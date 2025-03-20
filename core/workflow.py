@@ -38,29 +38,27 @@ class NodeWorkflow:
         original_force_recompute = self.force_recompute
         self.force_recompute = True
         
-        # Find terminal nodes (nodes with no outgoing connections)
-        terminal_nodes = self.get_terminal_nodes()
+        try:
+            # Process all nodes
+            nodes_processed = 0
+            
+            for node in self.nodes:
+                try:
+                    # Process each node - internally handles dependencies and cycles
+                    result = node.process()
+                    if result:  # If output was generated, count it
+                        nodes_processed += 1
+                except Exception as e:
+                    return False, f"Error executing node {node.title}: {str(e)}"
+            
+            if nodes_processed == 0:
+                return False, "No nodes needed processing"
+            
+            return True, f"Workflow executed successfully ({nodes_processed} nodes processed)"
         
-        if not terminal_nodes:
+        finally:
+            # Reset force_recompute
             self.force_recompute = original_force_recompute
-            return False, "No terminal nodes found"
-        
-        # Execute each terminal node, which will recursively process dependencies
-        success = True
-        message = "Workflow executed successfully"
-        
-        for node in terminal_nodes:
-            try:
-                node.process()
-            except Exception as e:
-                success = False
-                message = f"Error executing node {node.title}: {str(e)}"
-                break
-        
-        # Reset force_recompute
-        self.force_recompute = original_force_recompute
-        
-        return success, message
     
     def execute_workflow_async(self, callback=None):
         """Execute the workflow asynchronously"""
