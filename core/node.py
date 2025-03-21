@@ -66,6 +66,16 @@ class Node:
         self.processing_error = None
         self.status = "Ready"
         
+        # Property and output visibility tracking
+        self.property_visibility = {}  # property_name -> should_show_on_node
+        self.output_visibility = {}    # output_name -> should_show_on_node
+        
+        # Initialize property visibility from class definition
+        if hasattr(self.__class__, 'properties'):
+            for name, config in self.__class__.properties.items():
+                ui_config = config.get('ui', {})
+                self.property_visibility[name] = ui_config.get('preview_on_node', False)
+        
         # Initialize properties from class definition
         self._init_properties()
         
@@ -123,6 +133,11 @@ class Node:
                 self.output_timestamp = time.time()
                 self.dirty = False
                 self.status = "Complete"
+                
+                # Initialize visibility for any new outputs
+                for output_name in result.keys():
+                    if output_name not in self.output_visibility:
+                        self.output_visibility[output_name] = True
                 
                 # Update UI with the complete status
                 self.canvas.after(0, self.draw)
@@ -288,21 +303,24 @@ class Node:
         """Get properties that should be visible on the node face with no truncation"""
         visible_props = {}
         
-        # Add regular properties with no truncation
+        # Add regular properties with no truncation based on visibility settings
         if hasattr(self.__class__, 'properties'):
             for name, config in self.__class__.properties.items():
                 ui_config = config.get('ui', {})
-                if ui_config.get('preview_on_node', False):
+                # Use instance-level visibility setting
+                if self.property_visibility.get(name, ui_config.get('preview_on_node', False)):
                     value = getattr(self, name, None)
                     if value is not None:
                         # Show full value with no truncation
                         visible_props[ui_config.get('label', name)] = str(value)
         
-        # Add output cache to visible properties
+        # Add output cache to visible properties based on visibility settings
         if hasattr(self, 'output_cache') and self.output_cache:
             for key, value in self.output_cache.items():
-                # Show full output value with no truncation
-                visible_props[f"Output: {key}"] = str(value)
+                # Check if this output should be shown
+                if self.output_visibility.get(key, True):
+                    # Show full output value with no truncation
+                    visible_props[f"Output: {key}"] = str(value)
         
         return visible_props
     
@@ -404,4 +422,3 @@ class Node:
         
         # Ensure at least minimum height
         return max(min_height, self.min_height)
-

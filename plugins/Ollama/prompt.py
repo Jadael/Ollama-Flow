@@ -64,6 +64,9 @@ class PromptNode(Node):
         self.response = ""
         self.token_count = 0
         self.start_time = None
+        
+        # Add output visibility for "Response" to default to True
+        self.output_visibility["Response"] = True
     
     def init_sockets(self):
         """Initialize the node's input and output sockets"""
@@ -106,6 +109,9 @@ class PromptNode(Node):
         self.token_count = 0
         self.stop_event.clear()
         
+        # Initialize output_cache with empty response to start real-time updates
+        self.output_cache = {"Response": ""}
+        
         # Start time tracking
         self.start_time = time.time()
         self.status = "Generating..."
@@ -116,6 +122,8 @@ class PromptNode(Node):
             try:
                 self.generate_response(system_prompt, user_input)
                 # Once complete, update output_cache and mark node as not dirty
+                # (This is redundant now since we update output_cache in real-time,
+                # but we'll keep it for completeness)
                 self.output_cache = {"Response": self.response}
                 self.dirty = False
                 self.status = "Complete"
@@ -142,7 +150,7 @@ class PromptNode(Node):
         
         Thread(target=generation_thread, daemon=True).start()
         
-        # Return a placeholder result
+        # Return the initial empty response
         # The real result will be updated asynchronously
         return {"Response": "Processing..."}
     
@@ -210,6 +218,9 @@ class PromptNode(Node):
                             self.response += response_text
                             self.token_count += 1
                             
+                            # Update output_cache in real-time
+                            self.output_cache = {"Response": self.response}
+                            
                             # Update status every few tokens
                             if self.token_count % 5 == 0:
                                 elapsed = time.time() - self.start_time
@@ -274,6 +285,23 @@ class PromptNode(Node):
                 command=lambda: response_window.clipboard_append(self.response)
             )
             copy_btn.pack(pady=10)
+            
+            # Add auto-refresh functionality
+            if self.processing:
+                def refresh_response():
+                    if not response_window.winfo_exists():
+                        return  # Window was closed
+                    
+                    # Update the text with current response
+                    response_text.delete("1.0", "end")
+                    response_text.insert("1.0", self.response)
+                    
+                    # Schedule next refresh if still processing
+                    if self.processing and response_window.winfo_exists():
+                        response_window.after(500, refresh_response)
+                
+                # Start refresh cycle
+                response_window.after(500, refresh_response)
         
         view_btn = ctk.CTkButton(
             controls_frame, 
