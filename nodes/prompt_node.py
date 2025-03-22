@@ -26,21 +26,23 @@ class PromptNode(OllamaBaseNode):
         # Set async flag
         self.is_async_node = True
         
-        # Create input and output ports
-        self.add_input('System Prompt')
-        self.add_input('User Prompt')
-        self.add_output('Response')
-        
         # Create basic text properties
+        # Each property will automatically create an input
         self.add_text_input('model', 'Model', 'deepseek-r1:32b')
         self.add_text_input('system_prompt', 'System Prompt', 'You are a helpful assistant.')
+        self.add_text_input('user_prompt', 'User Prompt', '')
         self.add_text_input('temperature', 'Temperature', '0.7')
         self.add_text_input('top_p', 'Top P', '0.9')
         self.add_text_input('top_k', 'Top K', '40')
         self.add_text_input('repeat_penalty', 'Repeat Penalty', '1.1')
         self.add_text_input('max_tokens', 'Max Tokens', '2048')
         
-        # Add response preview
+        # Create output port
+        self.add_output('Response')
+        
+        # Add response preview - exclude from auto-inputs
+        self.exclude_property_from_input('response_preview')
+        self.exclude_property_from_input('status_info')
         self.add_text_input('response_preview', 'Response', '')
         self.add_text_input('status_info', 'Status', 'Ready')
         
@@ -56,18 +58,15 @@ class PromptNode(OllamaBaseNode):
     
     def execute(self):
         """Process the node asynchronously"""
-        # Get input values
-        system_input = self.get_input_data('System Prompt')
-        user_input = self.get_input_data('User Prompt')
+        # Get input values using our new property input system
+        system_prompt = self.get_property_value('system_prompt')
+        user_prompt = self.get_property_value('user_prompt')
         
-        if not user_input:
+        if not user_prompt:
             self.set_status("No user prompt input")
             self.processing = False
             self.processing_done = True
             return {'Response': ""}
-        
-        # Use system prompt from input if provided, otherwise use the node's system prompt
-        system_prompt = system_input if system_input else self.get_property('system_prompt')
         
         # Clear previous response data
         self.response = ""
@@ -80,7 +79,7 @@ class PromptNode(OllamaBaseNode):
         
         # Start generation in a separate thread
         Thread(target=self._generation_thread, 
-               args=(system_prompt, user_input), 
+               args=(system_prompt, user_prompt), 
                daemon=True).start()
         
         # Return a placeholder result
@@ -115,18 +114,18 @@ class PromptNode(OllamaBaseNode):
     def generate_response(self, system_prompt, user_prompt):
         """Generate a response from the LLM"""
         try:
-            # Prepare API call parameters
+            # Prepare API call parameters using property values
             options = {
-                "temperature": float(self.get_property('temperature')),
-                "top_p": float(self.get_property('top_p')),
-                "top_k": int(self.get_property('top_k')),
-                "repeat_penalty": float(self.get_property('repeat_penalty')),
-                "num_predict": int(self.get_property('max_tokens'))
+                "temperature": float(self.get_property_value('temperature')),
+                "top_p": float(self.get_property_value('top_p')),
+                "top_k": int(self.get_property_value('top_k')),
+                "repeat_penalty": float(self.get_property_value('repeat_penalty')),
+                "num_predict": int(self.get_property_value('max_tokens'))
             }
             
             # Prepare payload
             payload = {
-                "model": self.get_property('model'),
+                "model": self.get_property_value('model'),
                 "prompt": user_prompt,
                 "stream": True,
                 "options": options

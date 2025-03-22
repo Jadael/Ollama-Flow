@@ -19,24 +19,23 @@ class JoinNode(OllamaBaseNode):
         # Set node name that will be displayed
         self.set_name('Join')
         
-        # Create input and output ports
+        # Create numbered input properties - these will automatically create input ports
         for i in range(8):
-            self.add_input(f'Input {i+1}')
+            self.add_text_input(f'input_{i+1}', f'Input {i+1}', '')
         
-        self.add_output('Result')
-        
-        # Create properties - use simple text inputs for all properties
+        # Create configuration properties - these will automatically create input ports
         self.add_text_input('delimiter', 'Delimiter', '\n')
         self.add_text_input('skip_empty', 'Skip Empty Inputs (true/false)', 'true')
         self.add_text_input('trim_whitespace', 'Trim Whitespace (true/false)', 'false')
         
-        # Add preview tab for result
+        # Add output
+        self.add_output('Result')
+        
+        # Add preview tab for result - exclude from auto-inputs
+        self.exclude_property_from_input('result_preview')
+        self.exclude_property_from_input('status_info')
         self.add_text_input('result_preview', 'Joined Result', '')
         self.add_text_input('status_info', 'Status', 'Ready')
-        
-        # Create an input status property for each input to show on the node
-        for i in range(8):
-            self.add_text_input(f'input_{i+1}_status', f'Input {i+1}', 'Empty')
         
         # Set node color
         self.set_color(59, 217, 147)
@@ -50,39 +49,29 @@ class JoinNode(OllamaBaseNode):
     
     def execute(self):
         """Process the node and return output"""
-        # Get all input values
+        # Get all input values using our new property input system
         values = []
         empty_count = 0
         
         for i in range(8):
-            port_name = f'Input {i+1}'
-            value = self.get_input_data(port_name)
+            prop_name = f'input_{i+1}'
+            value = self.get_property_value(prop_name)
             
-            # Update input status
-            status_prop = f'input_{i+1}_status'
-            if value is None:
-                self.set_property(status_prop, 'Empty')
+            if value is None or value == '':
                 empty_count += 1
             else:
-                preview = str(value)[:20]
-                if len(str(value)) > 20:
-                    preview += "..."
-                self.set_property(status_prop, f'Has data: {preview}')
-            
-            # Convert to string if not None
-            if value is not None:
                 value_str = str(value)
                 
                 # Apply trimming if enabled
-                if self.get_property('trim_whitespace').lower() == 'true':
+                if self.get_property_value('trim_whitespace').lower() == 'true':
                     value_str = value_str.strip()
                 
                 # Add to values if not skipping empty or if not empty
-                if not self.get_property('skip_empty').lower() == 'true' or value_str:
+                if not self.get_property_value('skip_empty').lower() == 'true' or value_str:
                     values.append(value_str)
         
         # Join the values with the delimiter
-        result = self.get_property('delimiter').join(values)
+        result = self.get_property_value('delimiter').join(values)
         
         # Update status based on inputs
         if empty_count == 8:

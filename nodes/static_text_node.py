@@ -19,12 +19,15 @@ class StaticTextNode(OllamaBaseNode):
         # Set node name that will be displayed
         self.set_name('Static Text')
         
+        # Create property for text content - this will automatically create an input
+        self.add_text_input('text', 'Text Content', 'Enter text here...')
+        
+        # Exclude status from auto-inputs
+        self.exclude_property_from_input('status_info')
+        self.add_text_input('status_info', 'Status', 'Ready')
+        
         # Create the output port
         self.add_output('Text')
-        
-        # Create property for text content - this should be supported in all NodeGraphQt versions
-        self.add_text_input('text', 'Text Content', 'Enter text here...')
-        self.add_text_input('status_info', 'Status', 'Ready')
         
         # Set node color
         self.set_color(59, 156, 217)
@@ -38,6 +41,7 @@ class StaticTextNode(OllamaBaseNode):
     
     def execute(self):
         """Process the node and return output"""
-        text = self.get_property('text')
+        # Get the text using the new property input system
+        text = self.get_property_value('text')
         self.set_status(f"Outputting {len(text)} characters")
         return {'Text': text}

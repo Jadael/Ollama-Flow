@@ -20,11 +20,9 @@ class RegexNode(OllamaBaseNode):
         # Set node name that will be displayed
         self.set_name('Regex')
         
-        # Create input and output ports
-        self.add_input('Text')
-        self.add_output('Result')
-        
         # Create properties - all as simple text inputs to avoid compatibility issues
+        # Each property will automatically create an input port
+        self.add_text_input('input_text', 'Input Text', '')
         self.add_text_input('pattern', 'Regex Pattern', r'<think>.*?</think>')
         self.add_text_input('replacement', 'Replacement', '')
         
@@ -36,7 +34,13 @@ class RegexNode(OllamaBaseNode):
         self.add_text_input('use_multiline', 'Multiline Mode (true/false)', 'false')
         self.add_text_input('use_ignorecase', 'Ignore Case (true/false)', 'false')
         
-        # Add preview tab for input and output
+        # Add output
+        self.add_output('Result')
+        
+        # Add preview tab for input and output - exclude from auto-inputs
+        self.exclude_property_from_input('input_preview')
+        self.exclude_property_from_input('result_preview')
+        self.exclude_property_from_input('status_info')
         self.add_text_input('input_preview', 'Input Text', '')
         self.add_text_input('result_preview', 'Result', '')
         self.add_text_input('status_info', 'Status', 'Ready')
@@ -53,8 +57,8 @@ class RegexNode(OllamaBaseNode):
     
     def execute(self):
         """Process the node and return output"""
-        # Get input text
-        input_text = self.get_input_data('Text')
+        # Get input text using our new property input system
+        input_text = self.get_property_value('input_text')
         
         # Update input preview
         if input_text:
@@ -69,19 +73,19 @@ class RegexNode(OllamaBaseNode):
         try:
             # Compile regex flags
             flags = 0
-            if self.get_property('use_dotall').lower() == 'true':
+            if self.get_property_value('use_dotall').lower() == 'true':
                 flags |= re.DOTALL
-            if self.get_property('use_multiline').lower() == 'true':
+            if self.get_property_value('use_multiline').lower() == 'true':
                 flags |= re.MULTILINE
-            if self.get_property('use_ignorecase').lower() == 'true':
+            if self.get_property_value('use_ignorecase').lower() == 'true':
                 flags |= re.IGNORECASE
             
             # Compile the regex pattern
-            pattern = re.compile(self.get_property('pattern'), flags)
+            pattern = re.compile(self.get_property_value('pattern'), flags)
             
             # Perform the selected operation
-            operation = self.get_property('operation').lower()
-            replacement = self.get_property('replacement')
+            operation = self.get_property_value('operation').lower()
+            replacement = self.get_property_value('replacement')
             
             if operation == 'replace':
                 result = pattern.sub(replacement, input_text)
