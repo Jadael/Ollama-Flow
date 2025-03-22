@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, 
                               QStatusBar, QMenuBar, QMenu, QFileDialog,
                               QMessageBox)
@@ -407,10 +408,26 @@ class OllamaFlow(QMainWindow):
             if not file_path.endswith('.json'):
                 file_path += '.json'
                 
-            # Use NodeGraphQt's save functionality
-            self.graph.save(file_path)
-            self.statusBar.showMessage(f"Workflow saved to {file_path}")
-    
+            # Use NodeGraphQt's export_session functionality instead of save
+            try:
+                if hasattr(self.graph, 'export_session'):
+                    self.graph.export_session(file_path)
+                elif hasattr(self.graph, 'serialize_session'):
+                    # Alternative method used in some versions
+                    session_data = self.graph.serialize_session()
+                    with open(file_path, 'w') as f:
+                        json.dump(session_data, f, indent=2)
+                else:
+                    self.statusBar.showMessage("Error: Unable to save workflow - method not found")
+                    return
+                    
+                self.statusBar.showMessage(f"Workflow saved to {file_path}")
+            except Exception as e:
+                print(f"Error saving workflow: {e}")
+                import traceback
+                traceback.print_exc()
+                self.statusBar.showMessage(f"Error saving workflow: {str(e)}")
+
     def load_workflow(self):
         """Load a saved workflow"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -418,9 +435,25 @@ class OllamaFlow(QMainWindow):
         )
         
         if file_path:
-            # Use NodeGraphQt's load functionality
-            self.graph.load(file_path)
-            self.statusBar.showMessage(f"Workflow loaded from {file_path}")
+            # Use NodeGraphQt's import_session functionality instead of load
+            try:
+                if hasattr(self.graph, 'import_session'):
+                    self.graph.import_session(file_path)
+                elif hasattr(self.graph, 'deserialize_session'):
+                    # Alternative method used in some versions
+                    with open(file_path, 'r') as f:
+                        session_data = json.load(f)
+                    self.graph.deserialize_session(session_data)
+                else:
+                    self.statusBar.showMessage("Error: Unable to load workflow - method not found")
+                    return
+                    
+                self.statusBar.showMessage(f"Workflow loaded from {file_path}")
+            except Exception as e:
+                print(f"Error loading workflow: {e}")
+                import traceback
+                traceback.print_exc()
+                self.statusBar.showMessage(f"Error loading workflow: {str(e)}")
     
     def run_workflow(self):
         """Run the workflow using the executor"""

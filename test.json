@@ -1,0 +1,111 @@
+{
+  "graph": {
+    "layout_direction": 0,
+    "acyclic": true,
+    "pipe_collision": false,
+    "pipe_slicing": true,
+    "pipe_style": 1,
+    "accept_connection_types": {},
+    "reject_connection_types": {}
+  },
+  "nodes": {
+    "0x1f47b59b710": {
+      "type_": "com.ollamaflow.nodes.StaticTextNode",
+      "icon": null,
+      "name": "Static Text",
+      "color": [
+        59,
+        156,
+        217,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": false,
+      "visible": true,
+      "width": 238.0,
+      "height": 116.2,
+      "pos": [
+        4.685305736218567,
+        231.45410336919764
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "text": "Tell me a joke!",
+        "status_info": "Complete"
+      }
+    },
+    "0x1f47b62c080": {
+      "type_": "com.ollamaflow.nodes.PromptNode",
+      "icon": null,
+      "name": "LLM Prompt",
+      "color": [
+        217,
+        86,
+        59,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": false,
+      "visible": true,
+      "width": 355.0,
+      "height": 452.20000000000005,
+      "pos": [
+        407.6215990510159,
+        119.00676569995179
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "model": "deepseek-r1:14b",
+        "system_prompt": "You are a helpful assistant.",
+        "user_prompt": "",
+        "temperature": "0.7",
+        "top_p": "0.9",
+        "top_k": "40",
+        "repeat_penalty": "1.1",
+        "max_tokens": "2048",
+        "response_preview": "<think>\nAlright, the user asked for a joke. I need to make sure it's appropriate and light-hearted.\n\nI'll go with something simple and funny that most people can relate to.\n\nMaybe something about why eggs don't start fights. That plays on the idea of yolks as the center part.\n\nIt should be quick and easy to understand, so they get a good laugh without any confusion.\n</think>\n\nSure! Why don\u2019t eggs start fights?  \n\nBecause they might end up with a cracked shell! \ud83d\ude04",
+        "status_info": "Complete: 104 tokens"
+      }
+    }
+  },
+  "connections": [
+    {
+      "out": [
+        "0x1f47b59b710",
+        "Text"
+      ],
+      "in": [
+        "0x1f47b62c080",
+        "User Prompt"
+      ]
+    }
+  ]
+}
