@@ -1,350 +1,631 @@
-import customtkinter as ctk
-import os
 import sys
+import os
+from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget, 
+                              QStatusBar, QMenuBar, QMenu, QFileDialog,
+                              QMessageBox)
+from PySide6.QtGui import QAction
+from PySide6.QtCore import Qt, Signal, Slot
+
+# Try to import NodeGraphQt and check version
+try:
+    import NodeGraphQt
+    from NodeGraphQt import NodeGraph, PropertiesBinWidget
+    print(f"NodeGraphQt version: {getattr(NodeGraphQt, '__version__', 'unknown')}")
+except ImportError as e:
+    print(f"Error importing NodeGraphQt: {e}")
+    # Will be handled in the main block
 
 # Ensure plugins can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.workflow import NodeWorkflow
-from core.canvas import NodeCanvas
-from core.node_registry import get_all_node_categories
-
-class OllamaFlow(ctk.CTk):
+class OllamaFlow(QMainWindow):
+    """Main application window for Ollama Flow"""
+    
     def __init__(self):
         super().__init__()
-        self.title("Ollama Flow - Node-Based Workflow")
-        self.geometry("1600x900")
+        self.setWindowTitle("Ollama Flow - Node-Based Workflow")
+        self.resize(1600, 900)
         
-        # Configure dark theme
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        # Create the node graph
+        self.graph = NodeGraph()
+        self.graph_widget = self.graph.widget
+        self.setCentralWidget(self.graph_widget)
         
-        # Create the workflow
-        self.workflow = NodeWorkflow(self)
+        # Set up graph behavior
+        # Set acyclic option if available
+        if hasattr(self.graph, 'set_acyclic'):
+            self.graph.set_acyclic(True)  # Prevent cyclic connections
+            
+        # Configure viewer settings
+        viewer = self.graph.viewer()
+        if viewer:
+            # Set zoom sensitivity if the method exists
+            if hasattr(viewer, 'set_zoom_sensitivity'):
+                viewer.set_zoom_sensitivity(0.001)
         
-        # Create main layout
-        self.create_layout()
+        # Create the menu bar
+        self.setup_menu()
         
-        # Add some example nodes
+        # Create the status bar
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("Ready")
+        
+        # Create the properties panel
+        self.properties_bin = PropertiesBinWidget(node_graph=self.graph)
+        self.properties_dock = QDockWidget("Properties", self)
+        self.properties_dock.setWidget(self.properties_bin)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.properties_dock)
+        
+        # Register node types
+        self.register_nodes()
+        
+        # Add example nodes
         self.add_example_nodes()
+        
+        # Connect signals
+        self.graph.node_selected.connect(self.on_node_selected)
+        self.graph.node_created.connect(self.on_node_created)
+        
+        # Create workflow executor
+        try:
+            from workflow_executor import WorkflowExecutor
+            self.executor = WorkflowExecutor(self.graph)
+        except Exception as e:
+            print(f"Error initializing workflow executor: {e}")
+            import traceback
+            traceback.print_exc()
     
-    def create_layout(self):
-        # Configure grid layout
-        self.grid_columnconfigure(0, weight=4)  # Canvas area
-        self.grid_columnconfigure(1, weight=1)  # Properties panel
-        self.grid_rowconfigure(0, weight=1)     # Main workflow area
+    def setup_menu(self):
+        """Set up the application menu bar"""
+        menubar = self.menuBar()
         
-        # Create main frames
-        canvas_frame = ctk.CTkFrame(self)
-        canvas_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        # File menu
+        file_menu = menubar.addMenu("File")
         
-        properties_frame = ctk.CTkFrame(self)
-        properties_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+        new_action = QAction("New", self)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(self.new_workflow)
+        file_menu.addAction(new_action)
         
-        # Store reference to properties frame
-        self.workflow.properties_frame = properties_frame
+        save_action = QAction("Save", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_workflow)
+        file_menu.addAction(save_action)
         
-        # Setup canvas area
-        canvas_frame.grid_columnconfigure(0, weight=1)
-        canvas_frame.grid_rowconfigure(1, weight=1)
+        load_action = QAction("Load", self)
+        load_action.setShortcut("Ctrl+O")
+        load_action.triggered.connect(self.load_workflow)
+        file_menu.addAction(load_action)
         
-        # Toolbar with dynamic node buttons
-        toolbar = ctk.CTkFrame(canvas_frame)
-        toolbar.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        file_menu.addSeparator()
         
-        # Create toolbar with dynamically discovered nodes grouped by category
-        self.create_toolbar(toolbar)
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
         
-        # Create node canvas
-        self.node_canvas = NodeCanvas(
-            canvas_frame,
-            self.workflow,
-            bg="#1e1e1e",
-            highlightthickness=0
-        )
-        self.node_canvas.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+        # Node menu
+        node_menu = menubar.addMenu("Nodes")
         
-        # Properties panel
-        ctk.CTkLabel(
-            properties_frame,
-            text="Node Properties",
-            font=("Verdana", 16, "bold")
-        ).pack(pady=10)
+        # Add node submenu with simplified options
+        add_menu = node_menu.addMenu("Add Node")
         
-        # Initially show "no node selected"
-        self.workflow.show_node_properties(None)
+        # Create action for adding a static text node directly
+        add_static_action = QAction("Add Static Text", self)
+        add_static_action.triggered.connect(self.add_static_text_node)
+        add_menu.addAction(add_static_action)
+        
+        # Delete node action
+        delete_action = QAction("Delete Selected", self)
+        delete_action.setShortcut("Delete")
+        delete_action.triggered.connect(self.delete_selected_node)
+        node_menu.addAction(delete_action)
+        
+        # Workflow menu
+        workflow_menu = menubar.addMenu("Workflow")
+        
+        run_action = QAction("Run Workflow", self)
+        run_action.setShortcut("F5")
+        run_action.triggered.connect(self.run_workflow)
+        workflow_menu.addAction(run_action)
+        
+        reset_action = QAction("Reset All", self)
+        reset_action.triggered.connect(self.reset_workflow)
+        workflow_menu.addAction(reset_action)
     
-    def create_toolbar(self, toolbar):
-        """Create a toolbar with buttons for all registered node types, organized by category"""
-        # Get all node categories
-        node_categories = get_all_node_categories()
-        
-        # Sort categories with Core first, then alphabetically
-        category_order = sorted(node_categories.keys())
-        if "Core" in category_order:
-            category_order.remove("Core")
-            category_order.insert(0, "Core")
-        
-        # Create a notebook/tabs for categories
-        tabview = ctk.CTkTabview(toolbar)
-        tabview.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        
-        # Add tabs for each category and buttons for each node type
-        for category in category_order:
-            if category not in node_categories or not node_categories[category]:
-                continue
+    def register_nodes(self):
+        """Register custom node types with NodeGraphQt using direct factory approach"""
+        try:
+            # Import simplified node directly from the file to avoid __init__.py issues
+            try:
+                # Try direct import first
+                from nodes.static_text_node_simple import StaticTextNode
+            except ImportError:
+                # If that fails, try base import
+                from nodes import StaticTextNode
+            
+            # Get node factory from graph
+            if hasattr(self.graph, '_node_factory'):
+                factory = self.graph._node_factory
+            elif hasattr(self.graph, '_NodeGraph__node_factory'):
+                factory = self.graph._NodeGraph__node_factory
+            else:
+                print("CRITICAL: Cannot find node factory in graph!")
+                return
                 
-            # Add a tab for this category
-            tab = tabview.add(category)
+            # Try to use correct registration method
+            print(f"NodeGraphQt factory: {factory}")
             
-            # Sort node classes by node_type
-            node_classes = sorted(node_categories[category], key=lambda cls: cls.node_type)
+            # Register the simplified node directly
+            try:
+                # Register directly using graph API first
+                if hasattr(self.graph, 'register_node'):
+                    print("Registering nodes using graph.register_node()")
+                    self.graph.register_node(StaticTextNode)
+                
+                # Try factory registration as backup 
+                if hasattr(factory, 'register_node'):
+                    print("Registering nodes using factory.register_node()")
+                    factory.register_node(StaticTextNode)
+                    
+                # Try direct dictionary update as fallback
+                elif hasattr(factory, '_factory_dict') or hasattr(factory, '_node_factory_dict'):
+                    dict_name = '_factory_dict' if hasattr(factory, '_factory_dict') else '_node_factory_dict'
+                    print(f"Registering nodes by updating factory.{dict_name} directly")
+                    factory_dict = getattr(factory, dict_name)
+                    
+                    # Register the node in various ways to maximize chances of success
+                    factory_dict['StaticTextNode'] = StaticTextNode
+                    factory_dict['com.ollamaflow.nodes.StaticTextNode'] = StaticTextNode
+                    
+                    if hasattr(StaticTextNode, '__type__'):
+                        factory_dict[StaticTextNode.__type__] = StaticTextNode
+                        
+                    if hasattr(StaticTextNode, '__identifier__'):
+                        factory_dict[StaticTextNode.__identifier__] = StaticTextNode
+                        
+                        if hasattr(StaticTextNode, '__type__'):
+                            factory_dict[f"{StaticTextNode.__identifier__}.{StaticTextNode.__type__}"] = StaticTextNode
+                    
+                else:
+                    print("CRITICAL: Cannot find registration method or factory dictionary!")
+                
+                # Debug: print the registered node types
+                print("Registered node types:")
+                if hasattr(factory, '_factory_dict'):
+                    for name in factory._factory_dict.keys():
+                        print(f"  - {name}")
+                elif hasattr(factory, '_node_factory_dict'):
+                    for name in factory._node_factory_dict.keys():
+                        print(f"  - {name}")
+                
+            except Exception as e:
+                print(f"Error during direct node registration: {e}")
+                import traceback
+                traceback.print_exc()
             
-            # Add buttons for each node type in this category
-            for node_class in node_classes:
-                btn = ctk.CTkButton(
-                    tab,
-                    text=f"Add {node_class.node_type}",
-                    command=lambda cls=node_class: self.add_node(cls)
-                )
-                btn.pack(side="left", padx=5, pady=5)
-        
-        # Add workflow control buttons
-        run_btn = ctk.CTkButton(
-            toolbar,
-            text="Run Workflow",
-            command=self.run_workflow,
-            fg_color="#4CAF50"
-        )
-        run_btn.pack(side="right", padx=5, pady=5)
-        
-        clear_btn = ctk.CTkButton(
-            toolbar,
-            text="Reset All",
-            command=self.workflow.mark_all_dirty,
-            fg_color="#FF5722"
-        )
-        clear_btn.pack(side="right", padx=5, pady=5)
+        except Exception as e:
+            print(f"Error registering nodes: {e}")
+            import traceback
+            traceback.print_exc()
     
-    def add_node(self, node_class, x=100, y=100):
-        """Add a new node to the workflow"""
-        node = node_class(self.node_canvas, x=x, y=y)
-        self.workflow.add_node(node)
-        node.draw()
+    def add_static_text_node(self):
+        """Add a static text node directly without going through the graph factory"""
+        try:
+            # Create the node instance directly, avoiding __init__.py issues
+            try:
+                # Try direct import first
+                from nodes.static_text_node_simple import StaticTextNode
+            except ImportError:
+                # If that fails, try base import
+                from nodes import StaticTextNode
+                
+            static_node = StaticTextNode()
+            static_node.set_name("Static Text")
+            
+            # Add to the graph
+            if hasattr(self.graph, 'add_node'):
+                print("Adding node using graph.add_node()")
+                self.graph.add_node(static_node)
+            
+            # Position the node in the center
+            try:
+                # Get center position of viewport
+                view = self.graph.viewer()
+                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
+                    center_pos = view.mapToScene(view.viewport().rect().center())
+                    if hasattr(static_node, 'set_pos'):
+                        static_node.set_pos(center_pos.x(), center_pos.y())
+            except Exception as e:
+                print(f"Warning: Could not position node at center: {e}")
+                
+            # Set basic properties
+            if hasattr(static_node, 'set_property'):
+                static_node.set_property('text', 'New static text node')
+                
+            # Update status
+            self.statusBar.showMessage(f"Created Static Text node")
+            
+        except Exception as e:
+            print(f"Error creating Static Text node: {e}")
+            import traceback
+            traceback.print_exc()
+            self.statusBar.showMessage(f"Error creating node: {str(e)}")
+    
+    def add_node_from_menu(self, node_type, display_name):
+        """Add a node from menu selection to center of view"""
+        try:
+            # Create the node using the correct node type directly
+            print(f"Creating node type: {node_type} with display name: {display_name}")
+            
+            try:
+                # Try creating with type directly
+                node = self.graph.create_node(node_type)
+                
+                # Set display name if it worked
+                if hasattr(node, 'set_name'):
+                    node.set_name(display_name)
+            except Exception as e:
+                print(f"Error creating node with type {node_type}: {e}")
+                # Try creating with full namespace
+                node_type_id = f"com.ollamaflow.nodes.{node_type}"
+                try:
+                    node = self.graph.create_node(node_type_id)
+                    if hasattr(node, 'set_name'):
+                        node.set_name(display_name)
+                except Exception as e2:
+                    print(f"Error creating node with full namespace {node_type_id}: {e2}")
+                    # One more attempt - try creating by class
+                    if node_type == "StaticTextNode":
+                        from nodes.static_text_node_simple import StaticTextNode
+                        node = StaticTextNode()
+                    else:
+                        raise ValueError(f"Unknown node type: {node_type}")
+                    
+                    # Manually add to graph
+                    if hasattr(self.graph, 'add_node'):
+                        self.graph.add_node(node)
+                    
+                    # Set name if possible
+                    if hasattr(node, 'set_name'):
+                        node.set_name(display_name)
+            
+            # Try to position at center of view
+            try:
+                # Get center position of viewport
+                view = self.graph.viewer()
+                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
+                    center_pos = view.mapToScene(view.viewport().rect().center())
+                    if hasattr(node, 'set_pos'):
+                        node.set_pos(center_pos.x(), center_pos.y())
+            except Exception as e:
+                print(f"Warning: Could not position node at center: {e}")
+            
+            return node
+            
+        except Exception as e:
+            print(f"Error adding node from menu: {e}")
+            import traceback
+            traceback.print_exc()
+            self.statusBar.showMessage(f"Error adding node: {str(e)}")
+            return None
     
     def add_example_nodes(self):
-        """Add some example nodes to demonstrate the workflow"""
-        # Import nodes dynamically from the registry
-        from core.node_registry import get_node_class
+        """Add simplified example nodes to demonstrate the workflow"""
+        try:
+            # Try to create a static text node directly, avoiding __init__.py issues
+            try:
+                # Try direct import first
+                from nodes.static_text_node_simple import StaticTextNode
+            except ImportError:
+                # If that fails, try base import
+                from nodes import StaticTextNode
+            
+            # Create the node instance directly
+            static_node = StaticTextNode()
+            static_node.set_name("Static Text")
+            
+            # Add to the graph
+            if hasattr(self.graph, 'add_node'):
+                print("Adding node using graph.add_node()")
+                self.graph.add_node(static_node)
+            
+            # Position the node in the center
+            try:
+                # Get center position of viewport
+                view = self.graph.viewer()
+                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
+                    center_pos = view.mapToScene(view.viewport().rect().center())
+                    if hasattr(static_node, 'set_pos'):
+                        static_node.set_pos(center_pos.x(), center_pos.y())
+            except Exception as e:
+                print(f"Warning: Could not position node at center: {e}")
+                
+            # Set basic properties
+            if hasattr(static_node, 'set_property'):
+                static_node.set_property('text', 'This is a test node created directly')
+                
+        except Exception as e:
+            print(f"Error creating example nodes: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def connect_nodes(self, source_node, source_port_name, target_node, target_port_name):
+        """Helper method to connect nodes with better error handling"""
+        try:
+            # Get the source output port
+            source_port = None
+            if hasattr(source_node, 'output') and callable(source_node.output):
+                # Try to get by name first
+                try:
+                    source_port = source_node.output(source_port_name)
+                except:
+                    # If that fails, try by index (for the first port)
+                    source_port = source_node.output(0)
+            elif hasattr(source_node, 'outputs') and source_node.outputs:
+                source_port = source_node.outputs[0]
+            
+            # Get the target input port
+            target_port = None
+            if hasattr(target_node, 'input') and callable(target_node.input):
+                # Try to get by name first
+                try:
+                    target_port = target_node.input(target_port_name)
+                except:
+                    # If user prompt is second port (index 1)
+                    if target_port_name == "User Prompt":
+                        target_port = target_node.input(1)
+                    else:
+                        # Default to first port
+                        target_port = target_node.input(0)
+            elif hasattr(target_node, 'inputs') and target_node.inputs:
+                if target_port_name == "User Prompt" and len(target_node.inputs) > 1:
+                    target_port = target_node.inputs[1]
+                else:
+                    target_port = target_node.inputs[0]
+            
+            # Connect the ports if both are valid
+            if source_port and target_port:
+                if hasattr(source_port, 'connect_to'):
+                    source_port.connect_to(target_port)
+                    print(f"Connected: {source_node.name()} -> {target_node.name()}")
+                elif hasattr(target_port, 'connect_from'):
+                    target_port.connect_from(source_port)
+                    print(f"Connected: {source_node.name()} -> {target_node.name()}")
+            else:
+                print(f"Could not connect: ports not found ({source_port_name} -> {target_port_name})")
         
-        # Get node classes
-        static_node_cls = get_node_class("Static Text")
-        prompt_node_cls = get_node_class("LLM Prompt")
-        regex_node_cls = get_node_class("Regex Processor")
+        except Exception as e:
+            print(f"Error connecting nodes: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def on_node_selected(self, node):
+        """Handle node selection"""
+        if node:
+            try:
+                # Update the properties bin
+                self.properties_bin.set_node(node)
+                
+                # Get node name safely
+                node_name = "Unknown"
+                if hasattr(node, 'name') and callable(getattr(node, 'name')):
+                    node_name = node.name()
+                elif hasattr(node, 'get_name') and callable(getattr(node, 'get_name')):
+                    node_name = node.get_name()
+                
+                self.statusBar.showMessage(f"Selected: {node_name}")
+            except Exception as e:
+                print(f"Error handling node selection: {e}")
+                self.statusBar.showMessage(f"Error selecting node: {str(e)}")
+        else:
+            self.properties_bin.set_node(None)
+            self.statusBar.showMessage("Ready")
+    
+    def on_node_created(self, node):
+        """Handle node creation"""
+        try:
+            # Get node name safely
+            node_name = "Unknown"
+            if hasattr(node, 'name') and callable(getattr(node, 'name')):
+                node_name = node.name()
+            elif hasattr(node, 'get_name') and callable(getattr(node, 'get_name')):
+                node_name = node.get_name()
+                
+            self.statusBar.showMessage(f"Created node: {node_name}")
+            
+            # Mark the node as dirty to ensure it gets processed
+            if hasattr(node, 'mark_dirty'):
+                node.mark_dirty()
+        except Exception as e:
+            print(f"Error handling node creation: {e}")
+            self.statusBar.showMessage(f"Error with created node: {str(e)}")
+    
+    def delete_selected_node(self):
+        """Delete the currently selected node"""
+        try:
+            # Get selected nodes - handle API differences
+            selected = []
+            if hasattr(self.graph, 'selected_nodes') and callable(self.graph.selected_nodes):
+                selected = self.graph.selected_nodes()
+            elif hasattr(self.graph, 'get_selected_nodes') and callable(self.graph.get_selected_nodes):
+                selected = self.graph.get_selected_nodes()
+            
+            if selected:
+                # Delete each selected node
+                count = 0
+                for node in selected:
+                    try:
+                        # Handle API differences
+                        if hasattr(self.graph, 'delete_node') and callable(self.graph.delete_node):
+                            self.graph.delete_node(node)
+                        elif hasattr(self.graph, 'remove_node') and callable(self.graph.remove_node):
+                            self.graph.remove_node(node)
+                        count += 1
+                    except Exception as e:
+                        print(f"Error deleting node: {e}")
+                
+                self.statusBar.showMessage(f"Deleted {count} node(s)")
+            else:
+                self.statusBar.showMessage("No nodes selected")
+        except Exception as e:
+            print(f"Error in delete_selected_node: {e}")
+            self.statusBar.showMessage(f"Error deleting node: {str(e)}")
+    
+    def new_workflow(self):
+        """Create a new workflow"""
+        self.graph.clear_all()
+        self.statusBar.showMessage("New workflow created")
+    
+    def save_workflow(self):
+        """Save the current workflow"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 'Save Workflow', '', 'JSON Files (*.json)'
+        )
         
-        if not static_node_cls or not prompt_node_cls:
-            print("Warning: Could not find required node classes for example")
-            return
+        if file_path:
+            # Add .json extension if not provided
+            if not file_path.endswith('.json'):
+                file_path += '.json'
+                
+            # Use NodeGraphQt's save functionality
+            self.graph.save(file_path)
+            self.statusBar.showMessage(f"Workflow saved to {file_path}")
+    
+    def load_workflow(self):
+        """Load a saved workflow"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 'Load Workflow', '', 'JSON Files (*.json)'
+        )
         
-        # Add a static text node
-        static_node = static_node_cls(self.node_canvas, x=100, y=100)
-        static_node.text = "Tell me a joke about programming."
-        self.workflow.add_node(static_node)
-        
-        # Add a prompt node
-        prompt_node = prompt_node_cls(self.node_canvas, x=400, y=100)
-        prompt_node.system_prompt = "You are a helpful assistant with a good sense of humor."
-        self.workflow.add_node(prompt_node)
-        
-        # Add regex node if available
-        if regex_node_cls:
-            regex_node = regex_node_cls(self.node_canvas, x=700, y=100)
-            self.workflow.add_node(regex_node)
-        
-        # Draw the nodes
-        static_node.draw()
-        prompt_node.draw()
-        if regex_node_cls:
-            regex_node.draw()
-        
-        # Connect the static node to the prompt node
-        static_output = static_node.outputs[0]
-        prompt_input = prompt_node.inputs[1]  # User prompt input
-        static_output.connect(prompt_input)
-        
-        # Connect prompt to regex if available
-        if regex_node_cls:
-            prompt_output = prompt_node.outputs[0]
-            regex_input = regex_node.inputs[0]
-            prompt_output.connect(regex_input)
-        
-        # Redraw the nodes to show the connection
-        static_node.draw()
-        prompt_node.draw()
-        if regex_node_cls:
-            regex_node.draw()
+        if file_path:
+            # Use NodeGraphQt's load functionality
+            self.graph.load(file_path)
+            self.statusBar.showMessage(f"Workflow loaded from {file_path}")
     
     def run_workflow(self):
-        """Run the workflow in a non-blocking way"""
-        # Find nodes that need processing
-        dirty_nodes = [node for node in self.workflow.nodes if node.dirty]
-        processing_nodes = [node for node in self.workflow.nodes if node.processing]
-        
-        if not dirty_nodes and not processing_nodes:
-            from tkinter import messagebox
-            messagebox.showinfo("Workflow Status", "All nodes are up to date. Nothing to process.")
-            return
-        
-        # Show a non-modal status window
-        status_window = ctk.CTkToplevel(self)
-        status_window.title("Workflow Status")
-        status_window.geometry("300x200")
-        status_window.attributes("-topmost", True)
-        
-        # Add a label showing what's happening
-        status_label = ctk.CTkLabel(
-            status_window,
-            text=f"Processing workflow...\n{len(dirty_nodes)} nodes to process\n{len(processing_nodes)} nodes already running",
-            font=("Verdana", 14)
-        )
-        status_label.pack(pady=20)
-        
-        # Add a progress bar
-        progress_bar = ctk.CTkProgressBar(status_window)
-        progress_bar.pack(padx=20, pady=10, fill="x")
-        progress_bar.configure(mode="indeterminate")
-        progress_bar.start()
-        
-        # Add a "Show Results" button (initially disabled)
-        results_button = ctk.CTkButton(
-            status_window,
-            text="Show Results",
-            state="disabled",
-            command=lambda: self.show_workflow_results()
-        )
-        results_button.pack(pady=10)
-        
-        # Add a close button
-        close_button = ctk.CTkButton(
-            status_window,
-            text="Close",
-            command=status_window.destroy
-        )
-        close_button.pack(pady=10)
-        
-        # Update function for periodic status checks
-        def update_status():
-            # Count currently processing nodes
-            processing_count = len([node for node in self.workflow.nodes if node.processing])
-            dirty_count = len([node for node in self.workflow.nodes if node.dirty])
-            
-            # Update status label
-            if processing_count > 0:
-                status_label.configure(text=f"Processing workflow...\n{processing_count} nodes still processing\n{dirty_count} nodes waiting")
-            elif dirty_count > 0:
-                status_label.configure(text=f"Waiting for processing...\n{dirty_count} nodes still dirty")
-            else:
-                status_label.configure(text="Processing complete!")
-                progress_bar.stop()
-                progress_bar.configure(mode="determinate")
-                progress_bar.set(1.0)
-                results_button.configure(state="normal")
-            
-            # Schedule next update if window still exists
-            if status_window.winfo_exists():
-                status_window.after(500, update_status)
-        
-        def on_workflow_complete(result):
-            # Update any UI elements in status window if it still exists
-            if status_window.winfo_exists():
-                success, message = result
-                
-                if not success and "No nodes" not in message:
-                    from tkinter import messagebox
-                    messagebox.showerror("Workflow Error", message)
-        
-        # Execute workflow with callback
-        self.workflow.execute_workflow(callback=on_workflow_complete)
-        
-        # Start periodic UI updates
-        status_window.after(500, update_status)
+        """Run the workflow using the executor"""
+        if hasattr(self, 'executor'):
+            success, message = self.executor.execute_workflow(self.on_workflow_complete)
+            self.statusBar.showMessage(message)
+        else:
+            self.statusBar.showMessage("Workflow executor not available")
     
-    def show_workflow_results(self):
-        """Show results from terminal nodes"""
-        # Show result dialog
-        result_window = ctk.CTkToplevel(self)
-        result_window.title("Workflow Results")
-        result_window.geometry("600x400")
-        
-        ctk.CTkLabel(
-            result_window,
-            text="Workflow Results",
-            font=("Verdana", 16, "bold")
-        ).pack(pady=10)
-        
-        # Get results from terminal nodes
-        terminal_nodes = self.workflow.get_terminal_nodes()
-        
-        if not terminal_nodes:
-            ctk.CTkLabel(
-                result_window,
-                text="No terminal nodes found with results.\nTerminal nodes are those with no outgoing connections.",
-                font=("Verdana", 12)
-            ).pack(pady=20)
-            return
-        
-        results_frame = ctk.CTkScrollableFrame(result_window)
-        results_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        for node in terminal_nodes:
-            if not node.output_cache:
-                continue
-                
-            node_frame = ctk.CTkFrame(results_frame)
-            node_frame.pack(fill="x", pady=5, padx=5)
+    def on_workflow_complete(self, result):
+        """Handle workflow completion"""
+        success, message = result
+        self.statusBar.showMessage(message)
+    
+    def reset_workflow(self):
+        """Reset all nodes in the workflow"""
+        try:
+            # Get all nodes - handle API differences
+            all_nodes = []
+            if hasattr(self.graph, 'all_nodes') and callable(self.graph.all_nodes):
+                all_nodes = self.graph.all_nodes()
+            elif hasattr(self.graph, 'nodes') and callable(self.graph.nodes):
+                all_nodes = self.graph.nodes()
             
-            ctk.CTkLabel(
-                node_frame,
-                text=f"Node: {node.title}",
-                font=("Verdana", 12, "bold")
-            ).pack(anchor="w", padx=10, pady=5)
+            # Reset each node
+            reset_count = 0
+            for node in all_nodes:
+                try:
+                    if hasattr(node, 'mark_dirty'):
+                        node.mark_dirty()
+                        if hasattr(node, 'output_cache'):
+                            node.output_cache = {}
+                        reset_count += 1
+                except Exception as e:
+                    print(f"Error resetting node: {e}")
             
-            # Show outputs
-            for name, value in node.output_cache.items():
-                output_text = ctk.CTkTextbox(node_frame, height=100, wrap="word")
-                output_text.pack(fill="x", padx=10, pady=5)
-                output_text.insert("1.0", str(value))
-                output_text.configure(state="disabled")
-                
-                copy_btn = ctk.CTkButton(
-                    node_frame,
-                    text=f"Copy {name}",
-                    command=lambda v=value: self.clipboard_append(str(v))
-                )
-                copy_btn.pack(pady=5)
+            self.statusBar.showMessage(f"Reset {reset_count} nodes")
+        except Exception as e:
+            print(f"Error in reset_workflow: {e}")
+            self.statusBar.showMessage(f"Error resetting workflow: {str(e)}")
 
-# Create directory structure
+
 def ensure_directories():
-    """Create required directories if they don't exist"""
-    dirs = [
-        "core/ui",
-        "plugins/Core",
-        "plugins/Ollama"
-    ]
+    """Create required directories"""
+    # Create nodes directory if it doesn't exist
+    if not os.path.exists('nodes'):
+        os.makedirs('nodes')
+        print("Created nodes directory")
     
-    for directory in dirs:
-        os.makedirs(directory, exist_ok=True)
-        
-        # Create __init__.py files
-        init_file = os.path.join(directory, "__init__.py")
-        if not os.path.exists(init_file):
-            with open(init_file, "w") as f:
-                pass  # Create empty file
+    # Create __init__.py in nodes directory if it doesn't exist
+    init_file = os.path.join('nodes', '__init__.py')
+    if not os.path.exists(init_file):
+        with open(init_file, 'w') as f:
+            f.write('"""Node package for Ollama Flow"""\n')
+        print("Created nodes/__init__.py")
+
 
 if __name__ == "__main__":
-    # Create directories
-    ensure_directories()
-    
-    # Start application
-    app = OllamaFlow()
-    app.mainloop()
+    try:
+        # Ensure directories exist
+        ensure_directories()
+        
+        # Check for missing dependencies before starting application
+        missing_deps = []
+        
+        try:
+            import PySide6
+        except ImportError:
+            missing_deps.append("PySide6")
+            
+        try:
+            import NodeGraphQt
+        except ImportError:
+            missing_deps.append("NodeGraphQt")
+            
+        try:
+            import requests
+        except ImportError:
+            missing_deps.append("requests")
+        
+        # If there are missing dependencies, show a helpful message
+        if missing_deps:
+            app = QApplication(sys.argv)
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("Missing Dependencies")
+            msg.setText(f"The following dependencies are missing: {', '.join(missing_deps)}")
+            msg.setInformativeText("Please install them using pip:\n\npip install " + " ".join(missing_deps))
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec()
+            sys.exit(1)
+        
+        # Start application
+        app = QApplication(sys.argv)
+        window = OllamaFlow()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"Error starting application: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # If QApplication is available, show error in a message box
+        if 'QApplication' in locals():
+            try:
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Critical)
+                msg.setWindowTitle("Application Error")
+                msg.setText(f"Error starting application: {str(e)}")
+                msg.setDetailedText(traceback.format_exc())
+                msg.setStandardButtons(QMessageBox.Ok)
+                msg.exec()
+            except:
+                pass
+                
+        # If PySide6 is missing, suggest installation
+        if "No module named 'PySide6'" in str(e):
+            print("\nMissing PySide6. Please install required dependencies:")
+            print("pip install PySide6 NodeGraphQt requests")
+            
+        # If NodeGraphQt is missing, suggest installation
+        if "No module named 'NodeGraphQt'" in str(e):
+            print("\nMissing NodeGraphQt. Please install:")
+            print("pip install NodeGraphQt")
+        
+        input("\nPress Enter to exit...")
