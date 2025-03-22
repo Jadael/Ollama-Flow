@@ -1,20 +1,21 @@
 from NodeGraphQt import BaseNode
-import requests
-import json
 import time
-from threading import Thread, Event
+from threading import Event
 
-class OllamaBaseNode(BaseNode):
-    """Base class for all Ollama nodes that uses minimal API features"""
+class OllamaBaseNodeSimple(BaseNode):
+    """Simplified base class for all Ollama nodes that uses minimal API features"""
     
     # Node identifier - should be overridden by subclasses
     __identifier__ = 'com.ollamaflow.nodes'
+    
+    # Node type - should be overridden by subclasses
+    __type__ = 'OllamaBaseNodeSimple'
     
     # Node name - should be overridden by subclasses
     NODE_NAME = 'Base Node'
     
     def __init__(self):
-        super(OllamaBaseNode, self).__init__()
+        super(OllamaBaseNodeSimple, self).__init__()
         
         # Processing state
         self.processing = False

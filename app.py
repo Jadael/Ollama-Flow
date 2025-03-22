@@ -137,10 +137,10 @@ class OllamaFlow(QMainWindow):
     def register_nodes(self):
         """Register custom node types with NodeGraphQt using direct factory approach"""
         try:
-            # Import simplified node directly from the file to avoid __init__.py issues
+            # Import node directly
             try:
                 # Try direct import first
-                from nodes.static_text_node_simple import StaticTextNode
+                from nodes.static_text_node import StaticTextNode
             except ImportError:
                 # If that fails, try base import
                 from nodes import StaticTextNode
@@ -157,7 +157,7 @@ class OllamaFlow(QMainWindow):
             # Try to use correct registration method
             print(f"NodeGraphQt factory: {factory}")
             
-            # Register the simplified node directly
+            # Register the node directly
             try:
                 # Register directly using graph API first
                 if hasattr(self.graph, 'register_node'):
@@ -213,10 +213,10 @@ class OllamaFlow(QMainWindow):
     def add_static_text_node(self):
         """Add a static text node directly without going through the graph factory"""
         try:
-            # Create the node instance directly, avoiding __init__.py issues
+            # Create the node instance directly
             try:
                 # Try direct import first
-                from nodes.static_text_node_simple import StaticTextNode
+                from nodes.static_text_node import StaticTextNode
             except ImportError:
                 # If that fails, try base import
                 from nodes import StaticTextNode
@@ -314,10 +314,10 @@ class OllamaFlow(QMainWindow):
     def add_example_nodes(self):
         """Add simplified example nodes to demonstrate the workflow"""
         try:
-            # Try to create a static text node directly, avoiding __init__.py issues
+            # Try to create a static text node directly
             try:
                 # Try direct import first
-                from nodes.static_text_node_simple import StaticTextNode
+                from nodes.static_text_node import StaticTextNode
             except ImportError:
                 # If that fails, try base import
                 from nodes import StaticTextNode
