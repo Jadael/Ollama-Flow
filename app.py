@@ -53,6 +53,10 @@ class OllamaFlow(QMainWindow):
         
         # Create the properties panel
         self.properties_bin = PropertiesBinWidget(node_graph=self.graph)
+        # Try to set any needed properties for the widget
+        if hasattr(self.properties_bin, 'set_graph'):
+            self.properties_bin.set_graph(self.graph)
+
         self.properties_dock = QDockWidget("Properties", self)
         self.properties_dock.setWidget(self.properties_bin)
         self.addDockWidget(Qt.RightDockWidgetArea, self.properties_dock)
@@ -135,7 +139,7 @@ class OllamaFlow(QMainWindow):
         workflow_menu.addAction(reset_action)
     
     def register_nodes(self):
-        """Register custom node types with NodeGraphQt using direct factory approach"""
+        """Register custom node types with NodeGraphQt"""
         try:
             # Import node directly
             try:
@@ -154,56 +158,61 @@ class OllamaFlow(QMainWindow):
                 print("CRITICAL: Cannot find node factory in graph!")
                 return
                 
-            # Try to use correct registration method
+            # Try to use correct registration method - try only ONE method
             print(f"NodeGraphQt factory: {factory}")
             
-            # Register the node directly
-            try:
-                # Register directly using graph API first
-                if hasattr(self.graph, 'register_node'):
+            registered = False
+            
+            # Try graph registration first
+            if not registered and hasattr(self.graph, 'register_node'):
+                try:
                     print("Registering nodes using graph.register_node()")
                     self.graph.register_node(StaticTextNode)
-                
-                # Try factory registration as backup 
-                if hasattr(factory, 'register_node'):
+                    registered = True
+                except Exception as e:
+                    print(f"Info: Could not register with graph.register_node(): {e}")
+            
+            # Try factory registration if graph registration failed
+            if not registered and hasattr(factory, 'register_node'):
+                try:
                     print("Registering nodes using factory.register_node()")
                     factory.register_node(StaticTextNode)
+                    registered = True
+                except Exception as e:
+                    print(f"Info: Could not register with factory.register_node(): {e}")
                     
-                # Try direct dictionary update as fallback
-                elif hasattr(factory, '_factory_dict') or hasattr(factory, '_node_factory_dict'):
+            # Try direct dictionary update as fallback
+            if not registered and (hasattr(factory, '_factory_dict') or hasattr(factory, '_node_factory_dict')):
+                try:
                     dict_name = '_factory_dict' if hasattr(factory, '_factory_dict') else '_node_factory_dict'
                     print(f"Registering nodes by updating factory.{dict_name} directly")
                     factory_dict = getattr(factory, dict_name)
                     
-                    # Register the node in various ways to maximize chances of success
-                    factory_dict['StaticTextNode'] = StaticTextNode
-                    factory_dict['com.ollamaflow.nodes.StaticTextNode'] = StaticTextNode
+                    # Get the node's identifier and type
+                    node_id = getattr(StaticTextNode, '__identifier__', 'com.ollamaflow.nodes')
+                    node_type = getattr(StaticTextNode, '__type__', 'StaticTextNode')
+                    full_id = f"{node_id}.{node_type}"
                     
-                    if hasattr(StaticTextNode, '__type__'):
-                        factory_dict[StaticTextNode.__type__] = StaticTextNode
-                        
-                    if hasattr(StaticTextNode, '__identifier__'):
-                        factory_dict[StaticTextNode.__identifier__] = StaticTextNode
-                        
-                        if hasattr(StaticTextNode, '__type__'):
-                            factory_dict[f"{StaticTextNode.__identifier__}.{StaticTextNode.__type__}"] = StaticTextNode
-                    
-                else:
-                    print("CRITICAL: Cannot find registration method or factory dictionary!")
+                    # Check if already registered
+                    if full_id not in factory_dict:
+                        factory_dict[full_id] = StaticTextNode
+                        registered = True
+                except Exception as e:
+                    print(f"Error during direct node registration: {e}")
+            
+            if registered:
+                print("Successfully registered StaticTextNode")
+            else:
+                print("Note: StaticTextNode may already be registered")
                 
-                # Debug: print the registered node types
-                print("Registered node types:")
-                if hasattr(factory, '_factory_dict'):
-                    for name in factory._factory_dict.keys():
-                        print(f"  - {name}")
-                elif hasattr(factory, '_node_factory_dict'):
-                    for name in factory._node_factory_dict.keys():
-                        print(f"  - {name}")
-                
-            except Exception as e:
-                print(f"Error during direct node registration: {e}")
-                import traceback
-                traceback.print_exc()
+            # Debug: print the registered node types
+            print("Registered node types:")
+            if hasattr(factory, '_factory_dict'):
+                for name in factory._factory_dict.keys():
+                    print(f"  - {name}")
+            elif hasattr(factory, '_node_factory_dict'):
+                for name in factory._node_factory_dict.keys():
+                    print(f"  - {name}")
             
         except Exception as e:
             print(f"Error registering nodes: {e}")
@@ -405,8 +414,19 @@ class OllamaFlow(QMainWindow):
         """Handle node selection"""
         if node:
             try:
-                # Update the properties bin
-                self.properties_bin.set_node(node)
+                # Update the properties bin - use newer API methods if available
+                if hasattr(self.properties_bin, 'set_node'):
+                    self.properties_bin.set_node(node)
+                elif hasattr(self.properties_bin, 'add_node'):
+                    self.properties_bin.add_node(node)
+                elif hasattr(self.properties_bin, 'set_property'):
+                    self.properties_bin.set_property(node)
+                else:
+                    # For newer versions that use the properties attribute
+                    if hasattr(self.properties_bin, 'properties') and hasattr(self.properties_bin.properties, 'set_node'):
+                        self.properties_bin.properties.set_node(node)
+                    else:
+                        print("Warning: Could not find method to set node in properties bin")
                 
                 # Get node name safely
                 node_name = "Unknown"
@@ -420,7 +440,14 @@ class OllamaFlow(QMainWindow):
                 print(f"Error handling node selection: {e}")
                 self.statusBar.showMessage(f"Error selecting node: {str(e)}")
         else:
-            self.properties_bin.set_node(None)
+            # Try different API methods for clearing the node
+            if hasattr(self.properties_bin, 'set_node'):
+                self.properties_bin.set_node(None)
+            elif hasattr(self.properties_bin, 'add_node'):
+                self.properties_bin.add_node(None)
+            elif hasattr(self.properties_bin, 'clear'):
+                self.properties_bin.clear()
+            
             self.statusBar.showMessage("Ready")
     
     def on_node_created(self, node):
