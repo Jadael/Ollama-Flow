@@ -3,3 +3,5 @@
 /plugins/Core/__pycache__
 /plugins/Ollama/__pycache__
 /plugins/__pycache__
+*.crdownload
+/nodes/__pycache__

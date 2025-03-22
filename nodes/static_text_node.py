@@ -1,6 +1,6 @@
-from nodes.base_node_simple import OllamaBaseNodeSimple
+from nodes.base_node import OllamaBaseNode
 
-class StaticTextNode(OllamaBaseNodeSimple):
+class StaticTextNode(OllamaBaseNode):
     """A node that outputs static text"""
     
     # Node identifier and name
