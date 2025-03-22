@@ -2,6 +2,50 @@ from NodeGraphQt import BaseNode
 import requests
 import json
 import time
+from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication
+
+# Create a QObject for thread-safe signal communication
+class NodeSignalHandler(QObject):
+    # Define signals for thread-safe operations
+    property_updated = Signal(object, str, object)  # node, property_name, value
+    status_updated = Signal(object, str)  # node, status_text
+
+    @Slot(object, str, object)
+    def _update_property(self, node, prop_name, value):
+        """Slot to update a node property on the main thread"""
+        if hasattr(node, 'set_property'):
+            try:
+                # Try to update without push_undo to avoid errors if not supported
+                node.set_property(prop_name, value, push_undo=False)
+            except TypeError:
+                # Fall back to simpler version if push_undo isn't supported
+                node.set_property(prop_name, value)
+    
+    @Slot(object, str)
+    def _update_status(self, node, status_text):
+        """Slot to update a node status on the main thread"""
+        if hasattr(node, 'status'):
+            node.status = status_text
+            # Also update any status property if it exists
+            if hasattr(node, 'set_property') and hasattr(node, 'get_property'):
+                if node.get_property('status_info') is not None:
+                    node.set_property('status_info', status_text)
+
+# Create a singleton instance of the signal handler
+# We need to be careful about when this is initialized - only create it when the Qt application exists
+_signal_handler = None
+
+def get_signal_handler():
+    """Get or create the signal handler singleton"""
+    global _signal_handler
+    if _signal_handler is None:
+        # Only create when we have a QApplication instance
+        if QCoreApplication.instance() is not None:
+            _signal_handler = NodeSignalHandler()
+            # Connect the signals to slots
+            _signal_handler.property_updated.connect(_signal_handler._update_property, Qt.QueuedConnection)
+            _signal_handler.status_updated.connect(_signal_handler._update_status, Qt.QueuedConnection)
+    return _signal_handler
 
 class OllamaBaseNode(BaseNode):
     """Base class for all Ollama nodes that uses minimal API features"""
@@ -64,6 +108,8 @@ class OllamaBaseNode(BaseNode):
         """Process this node (should be called when inputs change)"""
         # Update status
         self.status = "Processing..."
+        self.set_property('status_info', "Processing...")
+        print(f"Node {self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else 'Unknown'}: Status set to Processing...")
         
         # If already processing, just return cached output
         if self.processing:
@@ -72,6 +118,8 @@ class OllamaBaseNode(BaseNode):
         # If not dirty and we have cached output, return it
         if not self.dirty and self.output_cache:
             self.status = "Complete"
+            self.set_property('status_info', "Complete")
+            print(f"Node {self.name()}: Using cached output (not dirty)")
             return self.output_cache
         
         # Set processing state
@@ -89,6 +137,8 @@ class OllamaBaseNode(BaseNode):
                 self.output_cache = result
                 self.dirty = False
                 self.status = "Complete"
+                self.set_property('status_info', "Complete")
+                print(f"Node {self.name()}: Execution complete, status set to Complete")
                 self.processing_done = True
             
             return result
@@ -97,7 +147,10 @@ class OllamaBaseNode(BaseNode):
             import traceback
             traceback.print_exc()
             self.processing_error = str(e)
-            self.status = f"Error: {str(e)[:20]}..."
+            error_msg = f"Error: {str(e)[:20]}..."
+            self.status = error_msg
+            self.set_property('status_info', error_msg)
+            print(f"Node {self.name()}: Execution error: {error_msg}")
             self.processing_done = True
             
             return {}
@@ -162,8 +215,57 @@ class OllamaBaseNode(BaseNode):
         
         return None
     
+    def thread_safe_set_property(self, prop_name, value):
+        """
+        Thread-safe method to set a property value.
+        This will ensure the property is set on the main (GUI) thread.
+        
+        Args:
+            prop_name: Name of the property to set
+            value: Value to set the property to
+        """
+        # Get the signal handler
+        signal_handler = get_signal_handler()
+        if signal_handler:
+            # Use the signal-slot mechanism to update the property on the main thread
+            signal_handler.property_updated.emit(self, prop_name, value)
+        else:
+            # Fall back to direct update if no signal handler is available
+            if hasattr(self, 'set_property'):
+                # Use super's set_property to avoid recursion
+                super(OllamaBaseNode, self).set_property(prop_name, value)
+    
+    def thread_safe_set_status(self, status_text):
+        """
+        Thread-safe method to set the status text for the node.
+        This will ensure the status is updated on the main (GUI) thread.
+        
+        Args:
+            status_text: Status text to set
+        """
+        # Get the signal handler
+        signal_handler = get_signal_handler()
+        if signal_handler:
+            # Use the signal-slot mechanism to update the status on the main thread
+            signal_handler.status_updated.emit(self, status_text)
+        else:
+            # Fall back to direct update if no signal handler is available
+            self.status = status_text
+            # Also update any status property if it exists
+            if hasattr(self, 'set_property') and hasattr(self, 'get_property'):
+                if self.get_property('status_info') is not None:
+                    # Use super's set_property to avoid recursion
+                    super(OllamaBaseNode, self).set_property('status_info', status_text)
+    
     def set_status(self, status_text):
         """Set the status text for the node"""
+        # If called from a non-main thread, use the thread-safe version
+        from PySide6.QtCore import QThread, QCoreApplication
+        if QThread.currentThread() != QCoreApplication.instance().thread():
+            self.thread_safe_set_status(status_text)
+            return
+            
+        # Otherwise, update directly
         self.status = status_text
         # Also update any status property if it exists
         if hasattr(self, 'set_property') and hasattr(self, 'get_property'):
@@ -375,3 +477,22 @@ class OllamaBaseNode(BaseNode):
     def get_property(self, name):
         """Override to check inputs first"""
         return self.get_property_value(name)
+    
+    # Add a thread-safe version of set_property
+    def set_property(self, name, value, **kwargs):
+        """
+        Override set_property to use thread-safe version when needed.
+        
+        Args:
+            name: Name of the property to set
+            value: Value to set the property to
+            **kwargs: Additional keyword arguments (like push_undo)
+        """
+        # If called from a non-main thread, use the thread-safe version
+        from PySide6.QtCore import QThread, QCoreApplication
+        if QThread.currentThread() != QCoreApplication.instance().thread():
+            self.thread_safe_set_property(name, value)
+            return
+            
+        # Otherwise, call the original method
+        return super(OllamaBaseNode, self).set_property(name, value, **kwargs)

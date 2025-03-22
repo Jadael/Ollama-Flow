@@ -93,20 +93,24 @@ class PromptNode(OllamaBaseNode):
             # Once complete, update output_cache and mark node as not dirty
             self.output_cache = {'Response': self.response}
             self.dirty = False
-            self.set_status("Complete")
+            
+            # Use thread-safe method to update status
+            self.thread_safe_set_status("Complete")
             
             # Mark as not processing and done
             self.processing = False
             self.processing_done = True
             
-            # Update UI
+            # Update UI using thread-safe method
             preview_text = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-            self.set_property('response_preview', preview_text)
+            self.thread_safe_set_property('response_preview', preview_text)
             
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.set_status(f"Error: {str(e)}")
+            
+            # Use thread-safe methods for updates
+            self.thread_safe_set_status(f"Error: {str(e)}")
             self.processing_error = str(e)
             self.processing = False
             self.processing_done = True
@@ -147,7 +151,7 @@ class PromptNode(OllamaBaseNode):
             )
             
             if self.current_response.status_code != 200:
-                self.set_status(f"API Error: {self.current_response.status_code}")
+                self.thread_safe_set_status(f"API Error: {self.current_response.status_code}")
                 print(f"Error from Ollama API: {self.current_response.text}")
                 return
             
@@ -165,37 +169,37 @@ class PromptNode(OllamaBaseNode):
                             self.response += response_text
                             self.token_count += 1
                             
-                            # Update status every 10 tokens
+                            # Update status every 10 tokens using thread-safe method
                             if self.token_count % 10 == 0:
                                 elapsed = time.time() - self.start_time
                                 tps = self.token_count / elapsed if elapsed > 0 else 0
-                                self.set_status(f"Generating: {self.token_count} tokens ({tps:.1f}/s)")
+                                self.thread_safe_set_status(f"Generating: {self.token_count} tokens ({tps:.1f}/s)")
                                 
-                                # Update preview occasionally
+                                # Update preview occasionally using thread-safe method
                                 if self.token_count % 30 == 0:
                                     preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                                    self.set_property('response_preview', preview)
+                                    self.thread_safe_set_property('response_preview', preview)
                         
                         # Check for completion
                         if data.get('done', False):
                             elapsed = time.time() - self.start_time
                             tps = self.token_count / elapsed if elapsed > 0 else 0
-                            self.set_status(f"Complete: {self.token_count} tokens ({tps:.1f}/s)")
+                            self.thread_safe_set_status(f"Complete: {self.token_count} tokens ({tps:.1f}/s)")
                             
-                            # Update final result
+                            # Update final result using thread-safe method
                             preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                            self.set_property('response_preview', preview)
+                            self.thread_safe_set_property('response_preview', preview)
                             print(f"Generation complete: {self.token_count} tokens in {elapsed:.2f}s ({tps:.1f}/s)")
                     
                     except json.JSONDecodeError:
                         print(f"Error decoding JSON from Ollama API: {line}")
-                        self.set_status("Error: JSON decode failed")
+                        self.thread_safe_set_status("Error: JSON decode failed")
             
         except Exception as e:
             print(f"Exception in generate_response: {str(e)}")
             import traceback
             traceback.print_exc()
-            self.set_status(f"Error: {str(e)[:20]}...")
+            self.thread_safe_set_status(f"Error: {str(e)[:20]}...")
         
         finally:
             self.current_response = None

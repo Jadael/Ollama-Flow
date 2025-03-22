@@ -425,15 +425,40 @@ class OllamaFlow(QMainWindow):
     def run_workflow(self):
         """Run the workflow using the executor"""
         if hasattr(self, 'executor'):
-            success, message = self.executor.execute_workflow(self.on_workflow_complete)
-            self.statusBar.showMessage(message)
+            print("Starting workflow execution...")
+            try:
+                success, message = self.executor.execute_workflow(self.on_workflow_complete)
+                print(f"Workflow execution initiated: {success}, {message}")
+                self.statusBar.showMessage(message)
+            except Exception as e:
+                print(f"Error starting workflow execution: {e}")
+                import traceback
+                traceback.print_exc()
+                self.statusBar.showMessage(f"Error: {str(e)}")
         else:
             self.statusBar.showMessage("Workflow executor not available")
     
     def on_workflow_complete(self, result):
         """Handle workflow completion"""
         success, message = result
+        print(f"Workflow completion received: Success={success}, Message={message}")
         self.statusBar.showMessage(message)
+        
+        # Provide visual feedback to the user
+        try:
+            msg = QMessageBox()
+            msg.setWindowTitle("Workflow Execution")
+            if success:
+                msg.setIcon(QMessageBox.Information)
+                msg.setText("Workflow execution completed")
+            else:
+                msg.setIcon(QMessageBox.Warning)
+                msg.setText("Workflow execution issue")
+            msg.setInformativeText(message)
+            msg.setStandardButtons(QMessageBox.Ok)
+            msg.exec()
+        except Exception as e:
+            print(f"Error showing workflow completion message: {e}")
     
     def reset_workflow(self):
         """Reset all nodes in the workflow"""

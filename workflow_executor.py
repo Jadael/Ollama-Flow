@@ -1,5 +1,27 @@
 import time
 from threading import Thread, Event
+from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication
+
+class ExecutorSignalHandler(QObject):
+    """Signal handler for workflow executor thread-safe operations"""
+    execution_completed = Signal(tuple)  # (success, message)
+
+    @Slot(tuple)
+    def _emit_completion(self, result):
+        """Receive result from worker thread and emit signal"""
+        self.execution_completed.emit(result)
+
+# Create a singleton instance of the signal handler
+_executor_signals = None
+
+def get_executor_signals():
+    """Get or create the executor signals singleton"""
+    global _executor_signals
+    if _executor_signals is None:
+        # Only create when we have a QApplication instance
+        if QCoreApplication.instance() is not None:
+            _executor_signals = ExecutorSignalHandler()
+    return _executor_signals
 
 class WorkflowExecutor:
     """Handles the execution of a NodeGraphQt workflow"""
@@ -9,6 +31,9 @@ class WorkflowExecutor:
         self.execution_thread = None
         self.execution_complete_event = Event()
         self.execution_complete_event.set()  # Initially not executing
+        
+        # Store the callback for later use
+        self.callback = None
     
     def execute_workflow(self, callback=None):
         """Execute the entire workflow with a callback when done"""
@@ -19,33 +44,93 @@ class WorkflowExecutor:
         # Clear the completion event
         self.execution_complete_event.clear()
         
+        # Store the callback
+        self.callback = callback
+        
+        # Connect the signal if not already connected
+        signal_handler = get_executor_signals()
+        if callback and signal_handler:
+            # We don't have a way to check if already connected in PySide6, 
+            # so we'll just connect (Qt handles duplicate connections safely)
+            signal_handler.execution_completed.connect(
+                self._handle_completion_on_main_thread, 
+                Qt.QueuedConnection
+            )
+        
         # Create and start the execution thread
-        self.execution_thread = Thread(target=self._execute_workflow_thread, 
-                                      args=(callback,), 
-                                      daemon=True)
+        self.execution_thread = Thread(target=self._execute_workflow_thread, daemon=True)
         self.execution_thread.start()
         
         return True, "Workflow execution started"
     
-    def _execute_workflow_thread(self, callback=None):
+    def _handle_completion_on_main_thread(self, result):
+        """Handle the workflow completion on the main thread"""
+        print(f"Handling workflow completion on main thread: {result}")
+        if self.callback:
+            try:
+                self.callback(result)
+            except Exception as e:
+                print(f"Error in workflow completion callback: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def _execute_workflow_thread(self):
         """Internal method to execute the workflow in a background thread"""
         result = (False, "No nodes processed")
         node_processed = False
         
         try:
-            # Find terminal nodes (with no outgoing connections)
-            terminal_nodes = self._get_terminal_nodes()
+            print("Starting workflow execution in background thread...")
             
-            # If no terminal nodes, try to process all nodes with outputs
-            if not terminal_nodes:
-                # Get all nodes (handling either a list or a method)
-                if callable(getattr(self.graph, 'all_nodes', None)):
-                    all_nodes = self.graph.all_nodes()
-                elif callable(getattr(self.graph, 'nodes', None)):
-                    all_nodes = self.graph.nodes()
-                else:
-                    all_nodes = []
-                    
+            # Get all nodes in the graph
+            if callable(getattr(self.graph, 'all_nodes', None)):
+                all_nodes = self.graph.all_nodes()
+            elif callable(getattr(self.graph, 'nodes', None)):
+                all_nodes = self.graph.nodes()
+            else:
+                all_nodes = []
+            
+            # Find all dirty nodes that need processing
+            dirty_nodes = []
+            for node in all_nodes:
+                if hasattr(node, 'dirty') and node.dirty and hasattr(node, 'compute'):
+                    dirty_nodes.append(node)
+            
+            print(f"Found {len(dirty_nodes)} dirty nodes to process")
+            
+            # Process dirty nodes if we have any
+            if dirty_nodes:
+                for node in dirty_nodes:
+                    try:
+                        print(f"Processing node: {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}")
+                        node.compute()
+                        node_processed = True
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        # Get node name safely
+                        node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
+                        result = (False, f"Error executing node {node_name}: {str(e)}")
+                        break
+            # If no dirty nodes found, fall back to processing terminal nodes
+            # This maintains backward compatibility with the original approach
+            elif terminal_nodes := self._get_terminal_nodes():
+                print(f"No dirty nodes found, processing {len(terminal_nodes)} terminal nodes")
+                for node in terminal_nodes:
+                    try:
+                        node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'
+                        print(f"Processing terminal node: {node_name}")
+                        if hasattr(node, 'compute'):
+                            node.compute()
+                            node_processed = True
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        result = (False, f"Error executing node {node.name()}: {str(e)}")
+                        break
+            # If still no nodes to process, try all nodes with outputs
+            else:
+                print("No dirty or terminal nodes found, trying all nodes with outputs")
                 for node in all_nodes:
                     # Check if the node has outputs
                     has_outputs = False
@@ -56,6 +141,8 @@ class WorkflowExecutor:
                         
                     if has_outputs:
                         try:
+                            node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'
+                            print(f"Processing node with outputs: {node_name}")
                             if hasattr(node, 'compute'):
                                 node.compute()
                                 node_processed = True
@@ -66,18 +153,6 @@ class WorkflowExecutor:
                             node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
                             result = (False, f"Error executing node {node_name}: {str(e)}")
                             break
-            else:
-                # Process terminal nodes (which will recursively process inputs)
-                for node in terminal_nodes:
-                    try:
-                        if hasattr(node, 'compute'):
-                            node.compute()
-                            node_processed = True
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        result = (False, f"Error executing node {node.name()}: {str(e)}")
-                        break
             
             # Wait a bit for async nodes to begin processing
             time.sleep(0.5)
@@ -86,24 +161,30 @@ class WorkflowExecutor:
             processing_nodes = self._get_processing_nodes()
             
             if processing_nodes:
+                node_names = [n.name() if hasattr(n, 'name') and callable(getattr(n, 'name')) else 'Unknown' for n in processing_nodes]
+                print(f"Waiting for {len(processing_nodes)} nodes that are still processing: {', '.join(node_names)}")
                 result = (True, f"Workflow started ({len(processing_nodes)} nodes processing)")
                 node_processed = True
             
             # Wait for all processing nodes to complete (up to timeout)
-            max_wait = 120  # 2 minutes
+            max_wait = 120  # 2 minute timeout (120 seconds)
             start_time = time.time()
             
             while processing_nodes and time.time() - start_time < max_wait:
+                print(f"Waiting for {len(processing_nodes)} nodes to complete processing...")
                 time.sleep(1)  # Check every second
                 processing_nodes = self._get_processing_nodes()
             
             # Check if any nodes were processed
             if node_processed:
                 if processing_nodes:
+                    print(f"Timeout: {len(processing_nodes)} nodes are still processing")
                     result = (True, f"Workflow partially complete, {len(processing_nodes)} nodes still running")
                 else:
-                    result = (True, "Workflow executed successfully")
+                    print(f"Workflow execution completed successfully")
+                    result = (True, f"Workflow executed successfully ({len(dirty_nodes)} nodes processed)")
             else:
+                print("No nodes needed processing")
                 result = (False, "No nodes needed processing")
                 
         except Exception as e:
@@ -114,10 +195,21 @@ class WorkflowExecutor:
         finally:
             # Set completion event
             self.execution_complete_event.set()
+            print(f"Workflow execution completed with result: {result}")
             
-            # Call callback if provided
-            if callback:
-                callback(result)
+            # Emit the signal for the callback to be called on the main thread
+            if self.callback:
+                signal_handler = get_executor_signals()
+                if signal_handler:
+                    print(f"Emitting workflow completion signal")
+                    signal_handler.execution_completed.emit(result)
+                else:
+                    # Fall back to direct callback if no signal handler is available
+                    try:
+                        print(f"No signal handler available, calling callback directly")
+                        self.callback(result)
+                    except Exception as e:
+                        print(f"Error in callback: {e}")
     
     def _get_terminal_nodes(self):
         """Find nodes with no outgoing connections"""

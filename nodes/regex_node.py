@@ -48,13 +48,6 @@ class RegexNode(OllamaBaseNode):
         # Set node color
         self.set_color(156, 59, 217)
     
-    def set_status(self, status_text):
-        """Update status by setting a property that's visible to the user"""
-        self.set_property('status_info', status_text)
-        # Also call base implementation if it exists
-        if hasattr(super(), 'set_status'):
-            super().set_status(status_text)
-    
     def execute(self):
         """Process the node and return output"""
         # Get input text using our new property input system
