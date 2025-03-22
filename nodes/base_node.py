@@ -139,6 +139,12 @@ class OllamaBaseNode(BaseNode):
         self.processing_done = True  # Flag for tracking completion
         self.processing_start_time = 0  # When processing started
         
+        # Add recalculation mode property - this is a node configuration option
+        self.exclude_property_from_input('recalculation_mode')
+        self.add_combo_menu('recalculation_mode', 'Recalculation Mode', 
+                           ['Recalculate if dirty', 'Always recalculate', 'Never recalculate'], 
+                           'Recalculate if dirty', create_input=False, tab='Configuration')
+        
         # Initialize the signal handler
         get_signal_handler()
     
@@ -184,16 +190,28 @@ class OllamaBaseNode(BaseNode):
         self.set_property('status_info', "Processing...")
         print(f"Node {self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else 'Unknown'}: Status set to Processing...")
         
+        # Get the current recalculation mode
+        recalculation_mode = self.get_property('recalculation_mode')
+        
         # If already processing, just return cached output
         if self.processing:
             return self.output_cache
         
-        # If not dirty and we have cached output, return it
-        if not self.dirty and self.output_cache:
+        # Handle caching based on recalculation mode
+        if recalculation_mode == 'Never recalculate' and self.output_cache:
+            self.status = "Complete (cached)"
+            self.set_property('status_info', "Complete (cached)")
+            print(f"Node {self.name()}: Using cached output (forced by Never recalculate)")
+            return self.output_cache
+            
+        # Default behavior: if not dirty and we have cached output, return it
+        if recalculation_mode == 'Recalculate if dirty' and not self.dirty and self.output_cache:
             self.status = "Complete"
             self.set_property('status_info', "Complete")
             print(f"Node {self.name()}: Using cached output (not dirty)")
             return self.output_cache
+            
+        # For 'Always recalculate', we skip the cache check and proceed to execution
         
         # Set processing state
         self.processing = True
