@@ -16,6 +16,11 @@ except ImportError as e:
     print(f"Error importing NodeGraphQt: {e}")
     # Will be handled in the main block
 
+try:
+    from port_tooltip import install_port_tooltips
+except ImportError as e:
+    print(f"Warning: Could not import port_tooltip module: {e}")
+
 # Ensure plugins can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,6 +56,9 @@ class OllamaFlow(QMainWindow):
             if hasattr(viewer, 'set_zoom_sensitivity'):
                 viewer.set_zoom_sensitivity(0.001)
         
+        # Set up port tooltips
+        self.setup_port_tooltips()
+
         # Create the menu bar
         self.setup_menu()
         
@@ -129,6 +137,23 @@ class OllamaFlow(QMainWindow):
         reset_action.triggered.connect(self.reset_workflow)
         workflow_menu.addAction(reset_action)
     
+    def setup_port_tooltips(self):
+        """Set up tooltips for ports and connections"""
+        try:
+            # Check if the port_tooltip module is available
+            if 'install_port_tooltips' in globals():
+                # Install tooltips on the graph
+                self.tooltip_manager = install_port_tooltips(self.graph)
+                if self.tooltip_manager:
+                    self.statusBar.showMessage("Port tooltips enabled", 3000)
+                    print("Port tooltips enabled")
+                else:
+                    print("Warning: Could not initialize port tooltips")
+        except Exception as e:
+            print(f"Error setting up port tooltips: {e}")
+            import traceback
+            traceback.print_exc()
+
     def build_nodes_menu(self, menubar):
         """Build the Nodes menu dynamically from registered node categories"""
         # Node menu
