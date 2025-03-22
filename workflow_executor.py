@@ -1,6 +1,6 @@
 import time
 from threading import Thread, Event
-from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication
+from PySide6.QtCore import QObject, Signal, Qt, Slot, QCoreApplication
 
 class ExecutorSignalHandler(QObject):
     """Signal handler for workflow executor thread-safe operations"""
@@ -83,12 +83,11 @@ class WorkflowExecutor:
             print("Starting workflow execution in background thread...")
             
             # Get all nodes in the graph
-            if callable(getattr(self.graph, 'all_nodes', None)):
+            all_nodes = []
+            if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
                 all_nodes = self.graph.all_nodes()
-            elif callable(getattr(self.graph, 'nodes', None)):
+            elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
                 all_nodes = self.graph.nodes()
-            else:
-                all_nodes = []
             
             # Find all dirty nodes that need processing
             dirty_nodes = []
@@ -102,7 +101,10 @@ class WorkflowExecutor:
             if dirty_nodes:
                 for node in dirty_nodes:
                     try:
-                        print(f"Processing node: {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}")
+                        node_name = "Unknown"
+                        if hasattr(node, 'name') and callable(getattr(node, 'name')):
+                            node_name = node.name()
+                        print(f"Processing node: {node_name}")
                         node.compute()
                         node_processed = True
                     except Exception as e:
@@ -118,7 +120,9 @@ class WorkflowExecutor:
                 print(f"No dirty nodes found, processing {len(terminal_nodes)} terminal nodes")
                 for node in terminal_nodes:
                     try:
-                        node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'
+                        node_name = "Unknown"
+                        if hasattr(node, 'name') and callable(getattr(node, 'name')):
+                            node_name = node.name()
                         print(f"Processing terminal node: {node_name}")
                         if hasattr(node, 'compute'):
                             node.compute()
@@ -126,7 +130,9 @@ class WorkflowExecutor:
                     except Exception as e:
                         import traceback
                         traceback.print_exc()
-                        result = (False, f"Error executing node {node.name()}: {str(e)}")
+                        # Get node name safely
+                        node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
+                        result = (False, f"Error executing node {node_name}: {str(e)}")
                         break
             # If still no nodes to process, try all nodes with outputs
             else:
@@ -141,7 +147,9 @@ class WorkflowExecutor:
                         
                     if has_outputs:
                         try:
-                            node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'
+                            node_name = "Unknown"
+                            if hasattr(node, 'name') and callable(getattr(node, 'name')):
+                                node_name = node.name()
                             print(f"Processing node with outputs: {node_name}")
                             if hasattr(node, 'compute'):
                                 node.compute()
@@ -161,7 +169,12 @@ class WorkflowExecutor:
             processing_nodes = self._get_processing_nodes()
             
             if processing_nodes:
-                node_names = [n.name() if hasattr(n, 'name') and callable(getattr(n, 'name')) else 'Unknown' for n in processing_nodes]
+                node_names = []
+                for n in processing_nodes:
+                    if hasattr(n, 'name') and callable(getattr(n, 'name')):
+                        node_names.append(n.name())
+                    else:
+                        node_names.append('Unknown')
                 print(f"Waiting for {len(processing_nodes)} nodes that are still processing: {', '.join(node_names)}")
                 result = (True, f"Workflow started ({len(processing_nodes)} nodes processing)")
                 node_processed = True
@@ -202,9 +215,10 @@ class WorkflowExecutor:
                 signal_handler = get_executor_signals()
                 if signal_handler:
                     print(f"Emitting workflow completion signal")
-                    signal_handler.execution_completed.emit(result)
+                    QCoreApplication.postEvent(signal_handler, 
+                                             QCustomEvent(signal_handler._emit_completion, result))
                 else:
-                    # Fall back to direct callback if no signal handler is available
+                    # Fall back to direct callback - only for extreme cases
                     try:
                         print(f"No signal handler available, calling callback directly")
                         self.callback(result)
@@ -216,25 +230,25 @@ class WorkflowExecutor:
         terminal_nodes = []
         
         # Get all nodes (handling either a list or a method)
-        if callable(getattr(self.graph, 'all_nodes', None)):
+        all_nodes = []
+        if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
             all_nodes = self.graph.all_nodes()
-        else:
+        elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
             all_nodes = self.graph.nodes()
         
         for node in all_nodes:
             has_outgoing = False
             
             # Get output ports (handling either a list or a method)
-            if callable(getattr(node, 'output_ports', None)):
+            output_ports = []
+            if hasattr(node, 'output_ports') and callable(getattr(node, 'output_ports')):
                 output_ports = node.output_ports()
             elif hasattr(node, 'outputs'):
                 output_ports = node.outputs
-            else:
-                output_ports = []
             
             # Check if any output port is connected
             for port in output_ports:
-                if callable(getattr(port, 'connected_ports', None)):
+                if hasattr(port, 'connected_ports') and callable(getattr(port, 'connected_ports')):
                     if port.connected_ports():
                         has_outgoing = True
                         break
@@ -254,15 +268,44 @@ class WorkflowExecutor:
         processing_nodes = []
         
         # Get all nodes (handling either a list or a method)
-        if callable(getattr(self.graph, 'all_nodes', None)):
+        all_nodes = []
+        if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
             all_nodes = self.graph.all_nodes()
-        elif callable(getattr(self.graph, 'nodes', None)):
+        elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
             all_nodes = self.graph.nodes()
-        else:
-            all_nodes = []
         
         for node in all_nodes:
             if hasattr(node, 'processing') and node.processing:
                 processing_nodes.append(node)
         
         return processing_nodes
+
+# Custom event class for safe event posting
+from PySide6.QtCore import QEvent
+
+class QCustomEvent(QEvent):
+    """Custom event for sending data to the main thread"""
+    
+    # Use a custom event type
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    
+    def __init__(self, callback, data):
+        super(QCustomEvent, self).__init__(QCustomEvent.EVENT_TYPE)
+        self.callback = callback
+        self.data = data
+    
+    def process(self):
+        """Process the event by calling the callback with the data"""
+        if callable(self.callback):
+            self.callback(self.data)
+
+# Override event method in ExecutorSignalHandler
+def event(self, event):
+    """Handle custom events"""
+    if event.type() == QCustomEvent.EVENT_TYPE:
+        event.process()
+        return True
+    return super(ExecutorSignalHandler, self).event(event)
+
+# Add the event method to ExecutorSignalHandler
+ExecutorSignalHandler.event = event

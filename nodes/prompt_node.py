@@ -1,10 +1,9 @@
-# ============= Modified prompt_node.py file ==============
 from nodes.base_node import OllamaBaseNode
 import requests
 import json
 import time
 from threading import Thread
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, Signal, Slot, Qt, QCoreApplication, QThread
 
 class PromptNode(OllamaBaseNode):
     """A node that sends prompts to an LLM and outputs the response"""
@@ -19,6 +18,11 @@ class PromptNode(OllamaBaseNode):
     # Node category for menu organization
     NODE_CATEGORY = 'LLM'
     
+    # Define class-level signals for UI updates
+    class PromptSignals(QObject):
+        update_preview = Signal(object, str)
+        update_status = Signal(object, str)
+    
     def __init__(self):
         super(PromptNode, self).__init__()
         
@@ -27,6 +31,11 @@ class PromptNode(OllamaBaseNode):
         
         # Set async flag
         self.is_async_node = True
+        
+        # Initialize signals
+        self.signals = PromptNode.PromptSignals()
+        self.signals.update_preview.connect(self._update_preview, Qt.QueuedConnection)
+        self.signals.update_status.connect(self._update_status, Qt.QueuedConnection)
         
         # Create basic text properties
         # Each property will automatically create an input
@@ -57,6 +66,24 @@ class PromptNode(OllamaBaseNode):
         
         # Set node color
         self.set_color(217, 86, 59)
+    
+    @Slot(object, str)
+    def _update_preview(self, node, text):
+        """Update the response preview in the main thread"""
+        if node != self:
+            return
+        # Use direct property setting here as we're in the main thread
+        if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
+            self.set_property('response_preview', text)
+    
+    @Slot(object, str)
+    def _update_status(self, node, status):
+        """Update the node status in the main thread"""
+        if node != self:
+            return
+        # Use direct status setting here as we're in the main thread
+        if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
+            self.set_status(status)
     
     def execute(self):
         """Process the node asynchronously"""
@@ -96,18 +123,17 @@ class PromptNode(OllamaBaseNode):
             self.output_cache = {'Response': self.response}
             self.dirty = False
             
-            # Use thread-safe method to update status
-            # Setting a more detailed status to make changes visible
+            # Use signal to update status from worker thread
             final_status = f"Complete: {self.token_count} tokens"
-            self.thread_safe_set_status(final_status)
+            self.signals.update_status.emit(self, final_status)
             
             # Mark as not processing and done
             self.processing = False
             self.processing_done = True
             
-            # Update UI using thread-safe method
+            # Update UI using signal
             preview_text = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-            self.thread_safe_set_property('response_preview', preview_text)
+            self.signals.update_preview.emit(self, preview_text)
             
             print(f"Generation thread completed with {self.token_count} tokens")
             
@@ -115,8 +141,8 @@ class PromptNode(OllamaBaseNode):
             import traceback
             traceback.print_exc()
             
-            # Use thread-safe methods for updates
-            self.thread_safe_set_status(f"Error: {str(e)}")
+            # Use signals for thread-safe updates
+            self.signals.update_status.emit(self, f"Error: {str(e)}")
             self.processing_error = str(e)
             self.processing = False
             self.processing_done = True
@@ -157,7 +183,7 @@ class PromptNode(OllamaBaseNode):
             )
             
             if self.current_response.status_code != 200:
-                self.thread_safe_set_status(f"API Error: {self.current_response.status_code}")
+                self.signals.update_status.emit(self, f"API Error: {self.current_response.status_code}")
                 print(f"Error from Ollama API: {self.current_response.text}")
                 return
             
@@ -175,39 +201,39 @@ class PromptNode(OllamaBaseNode):
                             self.response += response_text
                             self.token_count += 1
                             
-                            # Update status every few tokens using thread-safe method
+                            # Update status every few tokens using signal
                             if self.token_count % 5 == 0:
                                 elapsed = time.time() - self.start_time
                                 tps = self.token_count / elapsed if elapsed > 0 else 0
                                 status_text = f"Generating: {self.token_count} tokens ({tps:.1f}/s)"
-                                self.thread_safe_set_status(status_text)
+                                self.signals.update_status.emit(self, status_text)
                                 
-                                # Update preview occasionally using thread-safe method
+                                # Update preview occasionally using signal
                                 if self.token_count % 10 == 0:
                                     preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                                    self.thread_safe_set_property('response_preview', preview)
+                                    self.signals.update_preview.emit(self, preview)
                         
                         # Check for completion
                         if data.get('done', False):
                             elapsed = time.time() - self.start_time
                             tps = self.token_count / elapsed if elapsed > 0 else 0
                             status_text = f"Complete: {self.token_count} tokens ({tps:.1f}/s)"
-                            self.thread_safe_set_status(status_text)
+                            self.signals.update_status.emit(self, status_text)
                             
-                            # Update final result using thread-safe method
+                            # Update final result using signal
                             preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                            self.thread_safe_set_property('response_preview', preview)
+                            self.signals.update_preview.emit(self, preview)
                             print(f"Generation complete: {self.token_count} tokens in {elapsed:.2f}s ({tps:.1f}/s)")
                     
                     except json.JSONDecodeError:
                         print(f"Error decoding JSON from Ollama API: {line}")
-                        self.thread_safe_set_status("Error: JSON decode failed")
+                        self.signals.update_status.emit(self, "Error: JSON decode failed")
             
         except Exception as e:
             print(f"Exception in generate_response: {str(e)}")
             import traceback
             traceback.print_exc()
-            self.thread_safe_set_status(f"Error: {str(e)[:20]}...")
+            self.signals.update_status.emit(self, f"Error: {str(e)[:20]}...")
         
         finally:
             self.current_response = None

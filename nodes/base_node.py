@@ -1,9 +1,9 @@
-# --- Modified base_node.py with defensive initialization ---
 from NodeGraphQt import BaseNode
 import requests
 import json
 import time
-from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication, QTimer
+from threading import Thread
+from PySide6.QtCore import QObject, Signal, Qt, Slot, QThread, QCoreApplication, QTimer
 
 # Create a QObject for thread-safe signal communication
 class NodeSignalHandler(QObject):
@@ -29,9 +29,6 @@ class NodeSignalHandler(QObject):
             if hasattr(node, '_NodeObject__view'):
                 if hasattr(node._NodeObject__view, 'update'):
                     node._NodeObject__view.update()
-                    
-            # Signal for a node widget refresh
-            self.widget_refresh.emit(node)
     
     @Slot(object, str)
     def _update_status(self, node, status_text):
@@ -42,7 +39,10 @@ class NodeSignalHandler(QObject):
             # Also update any status property if it exists
             if hasattr(node, 'set_property') and hasattr(node, 'get_property'):
                 if node.get_property('status_info') is not None:
-                    node.set_property('status_info', status_text, push_undo=False)
+                    try:
+                        node.set_property('status_info', status_text, push_undo=False)
+                    except TypeError:
+                        node.set_property('status_info', status_text)
                     
             # Force widget refresh after status update
             if hasattr(node, '_NodeObject__view'):
@@ -63,24 +63,26 @@ class NodeSignalHandler(QObject):
                     view.update()
                     
             # For NodeGraphQt specifically, try to refresh the properties bin
-            if hasattr(node, 'graph'):
-                graph = node.graph()
-                if graph and hasattr(graph, '_viewer'):
-                    viewer = graph._viewer
-                    if hasattr(viewer, 'property_bin'):
-                        prop_bin = viewer.property_bin
-                        if hasattr(prop_bin, 'add_node'):
-                            prop_bin.add_node(node)
+            if hasattr(node, 'graph') and callable(node.graph):
+                try:
+                    graph = node.graph()
+                    if graph and hasattr(graph, '_viewer'):
+                        viewer = graph._viewer
+                        if hasattr(viewer, 'property_bin'):
+                            prop_bin = viewer.property_bin
+                            if hasattr(prop_bin, 'add_node'):
+                                prop_bin.add_node(node)
+                except Exception as e:
+                    print(f"Error accessing node graph: {e}")
         except Exception as e:
             print(f"Error refreshing node widgets: {e}")
 
 # Create a singleton instance of the signal handler
 _signal_handler = None
-_init_timer = None
 
 def get_signal_handler():
     """Get or create the signal handler singleton"""
-    global _signal_handler, _init_timer
+    global _signal_handler
     if _signal_handler is not None:
         return _signal_handler
         
@@ -101,15 +103,7 @@ def get_signal_handler():
             _signal_handler._refresh_node_widgets,
             Qt.QueuedConnection
         )
-    else:
-        # If QApplication doesn't exist yet, try again later
-        if _init_timer is None and 'QApplication' in globals():
-            print("QApplication not ready, scheduling signal handler creation")
-            _init_timer = QTimer()
-            _init_timer.setSingleShot(True)
-            _init_timer.timeout.connect(lambda: get_signal_handler())
-            _init_timer.start(100)  # Try again in 100ms
-            
+    
     return _signal_handler
 
 class OllamaBaseNode(BaseNode):
@@ -308,8 +302,6 @@ class OllamaBaseNode(BaseNode):
         if signal_handler:
             # Use the signal-slot mechanism to update the property on the main thread
             signal_handler.property_updated.emit(self, prop_name, value)
-            # Request UI refresh with a short delay to ensure property update took effect
-            QTimer.singleShot(50, lambda: signal_handler.widget_refresh.emit(self))
         else:
             print(f"Warning: No signal handler available for thread-safe property update")
             # Fall back to direct update if no signal handler is available
@@ -330,8 +322,6 @@ class OllamaBaseNode(BaseNode):
         if signal_handler:
             # Use the signal-slot mechanism to update the status on the main thread
             signal_handler.status_updated.emit(self, status_text)
-            # Request UI refresh with a short delay to ensure status update took effect
-            QTimer.singleShot(50, lambda: signal_handler.widget_refresh.emit(self))
         else:
             print(f"Warning: No signal handler available for thread-safe status update")
             # Fall back to direct update if no signal handler is available
@@ -345,8 +335,12 @@ class OllamaBaseNode(BaseNode):
     def set_status(self, status_text):
         """Set the status text for the node"""
         # If called from a non-main thread, use the thread-safe version
-        from PySide6.QtCore import QThread, QCoreApplication
-        if QThread.currentThread() != QCoreApplication.instance().thread():
+        current_thread = QThread.currentThread()
+        app_thread = None
+        if QCoreApplication.instance():
+            app_thread = QCoreApplication.instance().thread()
+            
+        if current_thread != app_thread:
             self.thread_safe_set_status(status_text)
             return
             
@@ -631,8 +625,12 @@ class OllamaBaseNode(BaseNode):
             **kwargs: Additional keyword arguments (like push_undo)
         """
         # If called from a non-main thread, use the thread-safe version
-        from PySide6.QtCore import QThread, QCoreApplication
-        if QThread.currentThread() != QCoreApplication.instance().thread():
+        current_thread = QThread.currentThread()
+        app_thread = None
+        if QCoreApplication.instance():
+            app_thread = QCoreApplication.instance().thread()
+            
+        if current_thread != app_thread:
             self.thread_safe_set_property(name, value)
             return
             
