@@ -5,3 +5,5 @@
 /plugins/__pycache__
 *.crdownload
 /nodes/__pycache__
+*.pyc
+/nodes/__pycache__

@@ -2,7 +2,6 @@ from NodeGraphQt import BaseNode
 import requests
 import json
 import time
-from threading import Thread, Event
 
 class OllamaBaseNode(BaseNode):
     """Base class for all Ollama nodes that uses minimal API features"""
@@ -10,8 +9,14 @@ class OllamaBaseNode(BaseNode):
     # Node identifier - should be overridden by subclasses
     __identifier__ = 'com.ollamaflow.nodes'
     
-    # Node name - should be overridden by subclasses
+    # Node type - should be overridden by subclasses
+    __type__ = 'BaseNode'
+    
+    # Node display name
     NODE_NAME = 'Base Node'
+    
+    # Node category for menu organization
+    NODE_CATEGORY = 'Basic'
     
     def __init__(self):
         super(OllamaBaseNode, self).__init__()
@@ -23,8 +28,8 @@ class OllamaBaseNode(BaseNode):
         self.status = "Ready"
         self.processing_error = None
         self.is_async_node = False  # Flag for async processing nodes
-        self.processing_complete_event = Event()
-        self.processing_complete_event.set()  # Initially not processing
+        self.processing_done = True  # Flag for tracking completion
+        self.processing_start_time = 0  # When processing started
     
     def mark_dirty(self):
         """Mark this node as needing reprocessing"""
@@ -55,19 +60,20 @@ class OllamaBaseNode(BaseNode):
         # Update status
         self.status = "Processing..."
         
-        # If already processing, just return
+        # If already processing, just return cached output
         if self.processing:
-            return
+            return self.output_cache
         
         # If not dirty and we have cached output, return it
         if not self.dirty and self.output_cache:
             self.status = "Complete"
-            return
+            return self.output_cache
         
         # Set processing state
         self.processing = True
+        self.processing_done = False
         self.processing_error = None
-        self.processing_complete_event.clear()
+        self.processing_start_time = time.time()
         
         try:
             # Execute the actual node-specific processing logic
@@ -78,6 +84,7 @@ class OllamaBaseNode(BaseNode):
                 self.output_cache = result
                 self.dirty = False
                 self.status = "Complete"
+                self.processing_done = True
             
             return result
             
@@ -86,6 +93,7 @@ class OllamaBaseNode(BaseNode):
             traceback.print_exc()
             self.processing_error = str(e)
             self.status = f"Error: {str(e)[:20]}..."
+            self.processing_done = True
             
             return {}
             
@@ -93,7 +101,6 @@ class OllamaBaseNode(BaseNode):
             # Only set processing complete for non-async nodes
             if not self.is_async_node:
                 self.processing = False
-                self.processing_complete_event.set()
     
     def get_input_data(self, input_name):
         """Get data from an input port by name"""
@@ -117,9 +124,25 @@ class OllamaBaseNode(BaseNode):
         
         # Wait if the connected node is processing (for async nodes)
         if hasattr(connected_node, 'processing') and connected_node.processing:
-            if hasattr(connected_node, 'processing_complete_event'):
-                timeout = 60  # 1 minute timeout
-                if not connected_node.processing_complete_event.wait(timeout):
+            # Simple polling with timeout
+            timeout = 120  # 2 minute timeout (120 seconds)
+            start_wait = time.time()
+            
+            while time.time() - start_wait < timeout:
+                # If the connected node finished processing, break out of the loop
+                if hasattr(connected_node, 'processing_done') and connected_node.processing_done:
+                    break
+                    
+                # Sleep briefly to avoid busy waiting
+                time.sleep(0.1)
+                
+                # Check again if it's still processing
+                if not hasattr(connected_node, 'processing') or not connected_node.processing:
+                    break
+            
+            # If we timed out and node is still processing
+            if hasattr(connected_node, 'processing') and connected_node.processing:
+                if not hasattr(connected_node, 'processing_done') or not connected_node.processing_done:
                     self.status = f"Timeout waiting for {connected_node.name()}"
                     raise TimeoutError(f"Timed out waiting for input from '{connected_node.name()}'")
         
@@ -133,3 +156,11 @@ class OllamaBaseNode(BaseNode):
             return connected_node.output_cache.get(connected_port.name(), None)
         
         return None
+    
+    def set_status(self, status_text):
+        """Set the status text for the node"""
+        self.status = status_text
+        # Also update any status property if it exists
+        if hasattr(self, 'set_property') and hasattr(self, 'get_property'):
+            if self.get_property('status_info') is not None:
+                self.set_property('status_info', status_text)

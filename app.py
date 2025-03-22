@@ -18,6 +18,13 @@ except ImportError as e:
 # Ensure plugins can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Import node registry
+try:
+    from node_registry import registry
+except ImportError as e:
+    print(f"Error importing node registry: {e}")
+    registry = None
+
 class OllamaFlow(QMainWindow):
     """Main application window for Ollama Flow"""
     
@@ -61,11 +68,8 @@ class OllamaFlow(QMainWindow):
         self.properties_dock.setWidget(self.properties_bin)
         self.addDockWidget(Qt.RightDockWidgetArea, self.properties_dock)
         
-        # Register node types
+        # Register and discover node types
         self.register_nodes()
-        
-        # Add example nodes
-        self.add_example_nodes()
         
         # Connect signals
         self.graph.node_selected.connect(self.on_node_selected)
@@ -109,22 +113,8 @@ class OllamaFlow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
-        # Node menu
-        node_menu = menubar.addMenu("Nodes")
-        
-        # Add node submenu with simplified options
-        add_menu = node_menu.addMenu("Add Node")
-        
-        # Create action for adding a static text node directly
-        add_static_action = QAction("Add Static Text", self)
-        add_static_action.triggered.connect(self.add_static_text_node)
-        add_menu.addAction(add_static_action)
-        
-        # Delete node action
-        delete_action = QAction("Delete Selected", self)
-        delete_action.setShortcut("Delete")
-        delete_action.triggered.connect(self.delete_selected_node)
-        node_menu.addAction(delete_action)
+        # Build Nodes menu dynamically from registry
+        self.build_nodes_menu(menubar)
         
         # Workflow menu
         workflow_menu = menubar.addMenu("Workflow")
@@ -138,8 +128,104 @@ class OllamaFlow(QMainWindow):
         reset_action.triggered.connect(self.reset_workflow)
         workflow_menu.addAction(reset_action)
     
+    def build_nodes_menu(self, menubar):
+        """Build the Nodes menu dynamically from registered node categories"""
+        # Node menu
+        node_menu = menubar.addMenu("Nodes")
+        
+        # Delete node action
+        delete_action = QAction("Delete Selected", self)
+        delete_action.setShortcut("Delete")
+        delete_action.triggered.connect(self.delete_selected_node)
+        node_menu.addAction(delete_action)
+        
+        node_menu.addSeparator()
+        
+        # Check if registry is available
+        if not registry:
+            # Create a basic nodes menu without registry
+            add_menu = node_menu.addMenu("Add Node")
+            add_static_action = QAction("Add Static Text", self)
+            add_static_action.triggered.connect(self.add_static_text_node)
+            add_menu.addAction(add_static_action)
+            return
+        
+        # Add node submenus by category
+        for category in sorted(registry.get_all_categories()):
+            category_menu = node_menu.addMenu(f"Add {category}")
+            
+            # Add nodes for this category
+            for node_info in registry.get_nodes_in_category(category):
+                node_action = QAction(node_info['display_name'], self)
+                # Use lambda with default args to capture the current values
+                node_action.triggered.connect(
+                    lambda checked=False, node_id=node_info['id'], 
+                    display_name=node_info['display_name']: 
+                    self.create_node_from_registry(node_id, display_name))
+                category_menu.addAction(node_action)
+    
+    def create_node_from_registry(self, node_id, display_name):
+        """Create a node from its registry ID"""
+        try:
+            # Try to create node using graph.create_node
+            if hasattr(self.graph, 'create_node'):
+                node = self.graph.create_node(node_id)
+                if node:
+                    self.position_node_at_center(node)
+                    self.statusBar.showMessage(f"Created {display_name} node")
+                    return
+            
+            # If that failed, get the class from registry and create manually
+            node_class = registry.get_node_class(node_id)
+            if node_class:
+                node = node_class()
+                self.graph.add_node(node)
+                self.position_node_at_center(node)
+                self.statusBar.showMessage(f"Created {display_name} node")
+            else:
+                self.statusBar.showMessage(f"Error: Node type {node_id} not found")
+                
+        except Exception as e:
+            print(f"Error creating node from registry: {e}")
+            import traceback
+            traceback.print_exc()
+            self.statusBar.showMessage(f"Error creating node: {str(e)}")
+    
+    def position_node_at_center(self, node):
+        """Position a node at the center of the current view"""
+        try:
+            # Get center position of viewport
+            view = self.graph.viewer()
+            if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
+                center_pos = view.mapToScene(view.viewport().rect().center())
+                if hasattr(node, 'set_pos'):
+                    node.set_pos(center_pos.x(), center_pos.y())
+        except Exception as e:
+            print(f"Warning: Could not position node at center: {e}")
+    
     def register_nodes(self):
-        """Register custom node types with NodeGraphQt"""
+        """Register all node types with NodeGraphQt"""
+        if registry:
+            # First discover all available nodes
+            registry.discover_nodes()
+            
+            # Then register them with the graph
+            success = registry.register_all_nodes(self.graph)
+            
+            if success:
+                print("Successfully registered all nodes from registry")
+                # Print registered nodes for debugging
+                print(f"Registered {len(registry.nodes_by_id)} nodes in {len(registry.nodes_by_category)} categories")
+            else:
+                print("Failed to register nodes from registry")
+                # Fall back to manual registration of StaticTextNode
+                self.register_static_text_node()
+        else:
+            # Fallback to manual registration
+            self.register_static_text_node()
+    
+    def register_static_text_node(self):
+        """Fallback method to manually register the StaticTextNode"""
         try:
             # Import node directly
             try:
@@ -161,93 +247,46 @@ class OllamaFlow(QMainWindow):
             # Try to use correct registration method - try only ONE method
             print(f"NodeGraphQt factory: {factory}")
             
-            registered = False
-            
-            # Try graph registration first
-            if not registered and hasattr(self.graph, 'register_node'):
-                try:
-                    print("Registering nodes using graph.register_node()")
+            # Try different registration methods until one works
+            try:
+                if hasattr(self.graph, 'register_node'):
                     self.graph.register_node(StaticTextNode)
-                    registered = True
-                except Exception as e:
-                    print(f"Info: Could not register with graph.register_node(): {e}")
-            
-            # Try factory registration if graph registration failed
-            if not registered and hasattr(factory, 'register_node'):
-                try:
-                    print("Registering nodes using factory.register_node()")
+                elif hasattr(factory, 'register_node'):
                     factory.register_node(StaticTextNode)
-                    registered = True
-                except Exception as e:
-                    print(f"Info: Could not register with factory.register_node(): {e}")
-                    
-            # Try direct dictionary update as fallback
-            if not registered and (hasattr(factory, '_factory_dict') or hasattr(factory, '_node_factory_dict')):
-                try:
+                else:
+                    # Manual registration by updating dictionary
                     dict_name = '_factory_dict' if hasattr(factory, '_factory_dict') else '_node_factory_dict'
-                    print(f"Registering nodes by updating factory.{dict_name} directly")
-                    factory_dict = getattr(factory, dict_name)
-                    
-                    # Get the node's identifier and type
-                    node_id = getattr(StaticTextNode, '__identifier__', 'com.ollamaflow.nodes')
-                    node_type = getattr(StaticTextNode, '__type__', 'StaticTextNode')
-                    full_id = f"{node_id}.{node_type}"
-                    
-                    # Check if already registered
-                    if full_id not in factory_dict:
+                    if hasattr(factory, dict_name):
+                        factory_dict = getattr(factory, dict_name)
+                        node_id = getattr(StaticTextNode, '__identifier__', 'com.ollamaflow.nodes')
+                        node_type = getattr(StaticTextNode, '__type__', 'StaticTextNode')
+                        full_id = f"{node_id}.{node_type}"
                         factory_dict[full_id] = StaticTextNode
-                        registered = True
-                except Exception as e:
-                    print(f"Error during direct node registration: {e}")
-            
-            if registered:
-                print("Successfully registered StaticTextNode")
-            else:
-                print("Note: StaticTextNode may already be registered")
+            except Exception as e:
+                print(f"Error during node registration: {e}")
                 
-            # Debug: print the registered node types
-            print("Registered node types:")
-            if hasattr(factory, '_factory_dict'):
-                for name in factory._factory_dict.keys():
-                    print(f"  - {name}")
-            elif hasattr(factory, '_node_factory_dict'):
-                for name in factory._node_factory_dict.keys():
-                    print(f"  - {name}")
-            
         except Exception as e:
-            print(f"Error registering nodes: {e}")
+            print(f"Error registering StaticTextNode: {e}")
             import traceback
             traceback.print_exc()
     
     def add_static_text_node(self):
-        """Add a static text node directly without going through the graph factory"""
+        """Add a static text node directly"""
         try:
             # Create the node instance directly
             try:
-                # Try direct import first
                 from nodes.static_text_node import StaticTextNode
             except ImportError:
-                # If that fails, try base import
                 from nodes import StaticTextNode
                 
             static_node = StaticTextNode()
-            static_node.set_name("Static Text")
             
             # Add to the graph
             if hasattr(self.graph, 'add_node'):
-                print("Adding node using graph.add_node()")
                 self.graph.add_node(static_node)
             
-            # Position the node in the center
-            try:
-                # Get center position of viewport
-                view = self.graph.viewer()
-                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
-                    center_pos = view.mapToScene(view.viewport().rect().center())
-                    if hasattr(static_node, 'set_pos'):
-                        static_node.set_pos(center_pos.x(), center_pos.y())
-            except Exception as e:
-                print(f"Warning: Could not position node at center: {e}")
+            # Position the node at the center of the view
+            self.position_node_at_center(static_node)
                 
             # Set basic properties
             if hasattr(static_node, 'set_property'):
@@ -261,154 +300,6 @@ class OllamaFlow(QMainWindow):
             import traceback
             traceback.print_exc()
             self.statusBar.showMessage(f"Error creating node: {str(e)}")
-    
-    def add_node_from_menu(self, node_type, display_name):
-        """Add a node from menu selection to center of view"""
-        try:
-            # Create the node using the correct node type directly
-            print(f"Creating node type: {node_type} with display name: {display_name}")
-            
-            try:
-                # Try creating with type directly
-                node = self.graph.create_node(node_type)
-                
-                # Set display name if it worked
-                if hasattr(node, 'set_name'):
-                    node.set_name(display_name)
-            except Exception as e:
-                print(f"Error creating node with type {node_type}: {e}")
-                # Try creating with full namespace
-                node_type_id = f"com.ollamaflow.nodes.{node_type}"
-                try:
-                    node = self.graph.create_node(node_type_id)
-                    if hasattr(node, 'set_name'):
-                        node.set_name(display_name)
-                except Exception as e2:
-                    print(f"Error creating node with full namespace {node_type_id}: {e2}")
-                    # One more attempt - try creating by class
-                    if node_type == "StaticTextNode":
-                        from nodes.static_text_node_simple import StaticTextNode
-                        node = StaticTextNode()
-                    else:
-                        raise ValueError(f"Unknown node type: {node_type}")
-                    
-                    # Manually add to graph
-                    if hasattr(self.graph, 'add_node'):
-                        self.graph.add_node(node)
-                    
-                    # Set name if possible
-                    if hasattr(node, 'set_name'):
-                        node.set_name(display_name)
-            
-            # Try to position at center of view
-            try:
-                # Get center position of viewport
-                view = self.graph.viewer()
-                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
-                    center_pos = view.mapToScene(view.viewport().rect().center())
-                    if hasattr(node, 'set_pos'):
-                        node.set_pos(center_pos.x(), center_pos.y())
-            except Exception as e:
-                print(f"Warning: Could not position node at center: {e}")
-            
-            return node
-            
-        except Exception as e:
-            print(f"Error adding node from menu: {e}")
-            import traceback
-            traceback.print_exc()
-            self.statusBar.showMessage(f"Error adding node: {str(e)}")
-            return None
-    
-    def add_example_nodes(self):
-        """Add simplified example nodes to demonstrate the workflow"""
-        try:
-            # Try to create a static text node directly
-            try:
-                # Try direct import first
-                from nodes.static_text_node import StaticTextNode
-            except ImportError:
-                # If that fails, try base import
-                from nodes import StaticTextNode
-            
-            # Create the node instance directly
-            static_node = StaticTextNode()
-            static_node.set_name("Static Text")
-            
-            # Add to the graph
-            if hasattr(self.graph, 'add_node'):
-                print("Adding node using graph.add_node()")
-                self.graph.add_node(static_node)
-            
-            # Position the node in the center
-            try:
-                # Get center position of viewport
-                view = self.graph.viewer()
-                if view and hasattr(view, 'mapToScene') and hasattr(view, 'viewport'):
-                    center_pos = view.mapToScene(view.viewport().rect().center())
-                    if hasattr(static_node, 'set_pos'):
-                        static_node.set_pos(center_pos.x(), center_pos.y())
-            except Exception as e:
-                print(f"Warning: Could not position node at center: {e}")
-                
-            # Set basic properties
-            if hasattr(static_node, 'set_property'):
-                static_node.set_property('text', 'This is a test node created directly')
-                
-        except Exception as e:
-            print(f"Error creating example nodes: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def connect_nodes(self, source_node, source_port_name, target_node, target_port_name):
-        """Helper method to connect nodes with better error handling"""
-        try:
-            # Get the source output port
-            source_port = None
-            if hasattr(source_node, 'output') and callable(source_node.output):
-                # Try to get by name first
-                try:
-                    source_port = source_node.output(source_port_name)
-                except:
-                    # If that fails, try by index (for the first port)
-                    source_port = source_node.output(0)
-            elif hasattr(source_node, 'outputs') and source_node.outputs:
-                source_port = source_node.outputs[0]
-            
-            # Get the target input port
-            target_port = None
-            if hasattr(target_node, 'input') and callable(target_node.input):
-                # Try to get by name first
-                try:
-                    target_port = target_node.input(target_port_name)
-                except:
-                    # If user prompt is second port (index 1)
-                    if target_port_name == "User Prompt":
-                        target_port = target_node.input(1)
-                    else:
-                        # Default to first port
-                        target_port = target_node.input(0)
-            elif hasattr(target_node, 'inputs') and target_node.inputs:
-                if target_port_name == "User Prompt" and len(target_node.inputs) > 1:
-                    target_port = target_node.inputs[1]
-                else:
-                    target_port = target_node.inputs[0]
-            
-            # Connect the ports if both are valid
-            if source_port and target_port:
-                if hasattr(source_port, 'connect_to'):
-                    source_port.connect_to(target_port)
-                    print(f"Connected: {source_node.name()} -> {target_node.name()}")
-                elif hasattr(target_port, 'connect_from'):
-                    target_port.connect_from(source_port)
-                    print(f"Connected: {source_node.name()} -> {target_node.name()}")
-            else:
-                print(f"Could not connect: ports not found ({source_port_name} -> {target_port_name})")
-        
-        except Exception as e:
-            print(f"Error connecting nodes: {e}")
-            import traceback
-            traceback.print_exc()
     
     def on_node_selected(self, node):
         """Handle node selection"""

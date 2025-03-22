@@ -4,10 +4,15 @@ from nodes.base_node import OllamaBaseNode
 class RegexNode(OllamaBaseNode):
     """A node that applies a regex pattern to its input text"""
     
-    # Node identifier and name
+    # Node identifier and type
     __identifier__ = 'com.ollamaflow.nodes'
     __type__ = 'RegexNode'
-    NODE_NAME = 'RegexNode'
+    
+    # Node display name
+    NODE_NAME = 'Regex'
+    
+    # Node category for menu organization
+    NODE_CATEGORY = 'Text Processing'
     
     def __init__(self):
         super(RegexNode, self).__init__()
@@ -19,24 +24,32 @@ class RegexNode(OllamaBaseNode):
         self.add_input('Text')
         self.add_output('Result')
         
-        # Create properties
+        # Create properties - all as simple text inputs to avoid compatibility issues
         self.add_text_input('pattern', 'Regex Pattern', r'<think>.*?</think>')
         self.add_text_input('replacement', 'Replacement', '')
         
-        operations = ['replace', 'match', 'split', 'findall']
-        self.add_combo_menu('operation', 'Operation', items=operations, default='replace')
+        # Use text input for operation instead of combo menu
+        self.add_text_input('operation', 'Operation (replace, match, split, or findall)', 'replace')
         
-        # Add checkbox properties
-        self.add_checkbox('use_dotall', 'Dot Matches Newline', True)
-        self.add_checkbox('use_multiline', 'Multiline Mode', False)
-        self.add_checkbox('use_ignorecase', 'Ignore Case', False)
+        # Add flags as text inputs with "true" or "false" values
+        self.add_text_input('use_dotall', 'Dot Matches Newline (true/false)', 'true')
+        self.add_text_input('use_multiline', 'Multiline Mode (true/false)', 'false')
+        self.add_text_input('use_ignorecase', 'Ignore Case (true/false)', 'false')
         
         # Add preview tab for input and output
         self.add_text_input('input_preview', 'Input Text', '')
         self.add_text_input('result_preview', 'Result', '')
+        self.add_text_input('status_info', 'Status', 'Ready')
         
         # Set node color
         self.set_color(156, 59, 217)
+    
+    def set_status(self, status_text):
+        """Update status by setting a property that's visible to the user"""
+        self.set_property('status_info', status_text)
+        # Also call base implementation if it exists
+        if hasattr(super(), 'set_status'):
+            super().set_status(status_text)
     
     def execute(self):
         """Process the node and return output"""
@@ -56,18 +69,18 @@ class RegexNode(OllamaBaseNode):
         try:
             # Compile regex flags
             flags = 0
-            if self.get_property('use_dotall'):
+            if self.get_property('use_dotall').lower() == 'true':
                 flags |= re.DOTALL
-            if self.get_property('use_multiline'):
+            if self.get_property('use_multiline').lower() == 'true':
                 flags |= re.MULTILINE
-            if self.get_property('use_ignorecase'):
+            if self.get_property('use_ignorecase').lower() == 'true':
                 flags |= re.IGNORECASE
             
             # Compile the regex pattern
             pattern = re.compile(self.get_property('pattern'), flags)
             
             # Perform the selected operation
-            operation = self.get_property('operation')
+            operation = self.get_property('operation').lower()
             replacement = self.get_property('replacement')
             
             if operation == 'replace':

@@ -2,17 +2,20 @@ from nodes.base_node import OllamaBaseNode
 import requests
 import json
 import time
-from threading import Thread, Event
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton
-from PySide6.QtCore import Slot, Signal
+from threading import Thread
 
 class PromptNode(OllamaBaseNode):
     """A node that sends prompts to an LLM and outputs the response"""
     
-    # Node identifier and name
+    # Node identifier and type
     __identifier__ = 'com.ollamaflow.nodes'
     __type__ = 'PromptNode'
-    NODE_NAME = 'PromptNode'
+    
+    # Node display name
+    NODE_NAME = 'LLM Prompt'
+    
+    # Node category for menu organization
+    NODE_CATEGORY = 'LLM'
     
     def __init__(self):
         super(PromptNode, self).__init__()
@@ -28,23 +31,21 @@ class PromptNode(OllamaBaseNode):
         self.add_input('User Prompt')
         self.add_output('Response')
         
-        # Create properties with simpler API
-        models = ['deepseek-r1:32b', 'llama3:8b', 'llama3:70b', 'phi3:14b']
-        self.add_combo_menu('model', 'Model', items=models, default='deepseek-r1:32b')
+        # Create basic text properties
+        self.add_text_input('model', 'Model', 'deepseek-r1:32b')
         self.add_text_input('system_prompt', 'System Prompt', 'You are a helpful assistant.')
-        self.add_float_slider('temperature', 'Temperature', value=0.7, range=(0.0, 1.5))
-        
-        # Add advanced parameters with simpler API
-        self.add_float_slider('top_p', 'Top P', value=0.9, range=(0.0, 1.0))
-        self.add_int_slider('top_k', 'Top K', value=40, range=(1, 100))
-        self.add_float_slider('repeat_penalty', 'Repeat Penalty', value=1.1, range=(0.0, 2.0))
-        self.add_int_slider('max_tokens', 'Max Tokens', value=2048, range=(1, 8192))
+        self.add_text_input('temperature', 'Temperature', '0.7')
+        self.add_text_input('top_p', 'Top P', '0.9')
+        self.add_text_input('top_k', 'Top K', '40')
+        self.add_text_input('repeat_penalty', 'Repeat Penalty', '1.1')
+        self.add_text_input('max_tokens', 'Max Tokens', '2048')
         
         # Add response preview
         self.add_text_input('response_preview', 'Response', '')
+        self.add_text_input('status_info', 'Status', 'Ready')
         
         # Additional prompt node state
-        self.stop_event = Event()
+        self.stop_requested = False
         self.current_response = None
         self.response = ""
         self.token_count = 0
@@ -52,48 +53,6 @@ class PromptNode(OllamaBaseNode):
         
         # Set node color
         self.set_color(217, 86, 59)
-        
-        # Create custom widget for extra controls
-        self.create_widgets()
-    
-    def create_widgets(self):
-        """Create custom control widget"""
-        # Create widget to hold the buttons
-        control_widget = QWidget()
-        layout = QVBoxLayout(control_widget)
-        
-        # Create stop button
-        self.stop_button = QPushButton("Stop Generation")
-        self.stop_button.clicked.connect(self.stop)
-        layout.addWidget(self.stop_button)
-        
-        # Create clear button
-        self.clear_button = QPushButton("Clear Response")
-        self.clear_button.clicked.connect(self.clear_response)
-        layout.addWidget(self.clear_button)
-        
-        # Set layout
-        control_widget.setLayout(layout)
-        
-        # Add widget to node
-        self.add_custom_widget(control_widget, tab='Controls')
-    
-    def clear_response(self):
-        """Clear the current response"""
-        self.response = ""
-        self.set_property('response_preview', "")
-        self.output_cache = {}
-        self.mark_dirty()
-    
-    def stop(self):
-        """Stop the current generation process"""
-        self.stop_event.set()
-        if self.current_response:
-            try:
-                self.current_response.close()
-            except:
-                pass
-        self.set_status("Stopped")
     
     def execute(self):
         """Process the node asynchronously"""
@@ -104,7 +63,7 @@ class PromptNode(OllamaBaseNode):
         if not user_input:
             self.set_status("No user prompt input")
             self.processing = False
-            self.processing_complete_event.set()
+            self.processing_done = True
             return {'Response': ""}
         
         # Use system prompt from input if provided, otherwise use the node's system prompt
@@ -113,7 +72,7 @@ class PromptNode(OllamaBaseNode):
         # Clear previous response data
         self.response = ""
         self.token_count = 0
-        self.stop_event.clear()
+        self.stop_requested = False
         
         # Start time tracking
         self.start_time = time.time()
@@ -131,35 +90,38 @@ class PromptNode(OllamaBaseNode):
         """Thread for async generation"""
         try:
             self.generate_response(system_prompt, user_prompt)
+            
             # Once complete, update output_cache and mark node as not dirty
             self.output_cache = {'Response': self.response}
             self.dirty = False
             self.set_status("Complete")
+            
+            # Mark as not processing and done
             self.processing = False
-            self.processing_complete_event.set()
+            self.processing_done = True
             
             # Update UI
-            self.set_property('response_preview', self.response[:10000] + 
-                            ('...' if len(self.response) > 10000 else ''))
-            self.set_output_data('Response', self.response)
+            preview_text = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
+            self.set_property('response_preview', preview_text)
             
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.set_status(f"Error: {str(e)}")
+            self.processing_error = str(e)
             self.processing = False
-            self.processing_complete_event.set()
+            self.processing_done = True
     
     def generate_response(self, system_prompt, user_prompt):
         """Generate a response from the LLM"""
         try:
             # Prepare API call parameters
             options = {
-                "temperature": self.get_property('temperature'),
-                "top_p": self.get_property('top_p'),
-                "top_k": self.get_property('top_k'),
-                "repeat_penalty": self.get_property('repeat_penalty'),
-                "num_predict": self.get_property('max_tokens')
+                "temperature": float(self.get_property('temperature')),
+                "top_p": float(self.get_property('top_p')),
+                "top_k": int(self.get_property('top_k')),
+                "repeat_penalty": float(self.get_property('repeat_penalty')),
+                "num_predict": int(self.get_property('max_tokens'))
             }
             
             # Prepare payload
@@ -192,7 +154,7 @@ class PromptNode(OllamaBaseNode):
             
             # Process the streaming response
             for line in self.current_response.iter_lines():
-                if self.stop_event.is_set():
+                if self.stop_requested:
                     print("Generation stopped by user")
                     break
                 
