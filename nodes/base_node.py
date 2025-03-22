@@ -1,50 +1,115 @@
+# --- Modified base_node.py with defensive initialization ---
 from NodeGraphQt import BaseNode
 import requests
 import json
 import time
-from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication
+from PySide6.QtCore import QObject, Signal, QMetaObject, Qt, Slot, QThread, QCoreApplication, QTimer
 
 # Create a QObject for thread-safe signal communication
 class NodeSignalHandler(QObject):
     # Define signals for thread-safe operations
     property_updated = Signal(object, str, object)  # node, property_name, value
     status_updated = Signal(object, str)  # node, status_text
+    widget_refresh = Signal(object)  # node to refresh widgets
 
     @Slot(object, str, object)
     def _update_property(self, node, prop_name, value):
         """Slot to update a node property on the main thread"""
+        print(f"UI Update: Setting {prop_name} = {value[:30]}... on {node.name()}" if isinstance(value, str) else f"UI Update: Setting {prop_name} = {value} on {node.name()}")
         if hasattr(node, 'set_property'):
             try:
-                # Try to update without push_undo to avoid errors if not supported
+                # Use the NodeGraphQt's property system
+                # The push_undo=False argument is important for compatibility
                 node.set_property(prop_name, value, push_undo=False)
             except TypeError:
                 # Fall back to simpler version if push_undo isn't supported
                 node.set_property(prop_name, value)
+                
+            # Force widget refresh after property update
+            if hasattr(node, '_NodeObject__view'):
+                if hasattr(node._NodeObject__view, 'update'):
+                    node._NodeObject__view.update()
+                    
+            # Signal for a node widget refresh
+            self.widget_refresh.emit(node)
     
     @Slot(object, str)
     def _update_status(self, node, status_text):
         """Slot to update a node status on the main thread"""
+        print(f"UI Update: Setting status = {status_text} on {node.name()}")
         if hasattr(node, 'status'):
             node.status = status_text
             # Also update any status property if it exists
             if hasattr(node, 'set_property') and hasattr(node, 'get_property'):
                 if node.get_property('status_info') is not None:
-                    node.set_property('status_info', status_text)
+                    node.set_property('status_info', status_text, push_undo=False)
+                    
+            # Force widget refresh after status update
+            if hasattr(node, '_NodeObject__view'):
+                if hasattr(node._NodeObject__view, 'update'):
+                    node._NodeObject__view.update()
+
+    @Slot(object)
+    def _refresh_node_widgets(self, node):
+        """Trigger a refresh of the node's property widgets"""
+        try:
+            # Force a property widget refresh via the node's view
+            if hasattr(node, 'update'):
+                node.update()
+                
+            if hasattr(node, 'view') and callable(node.view):
+                view = node.view()
+                if view and hasattr(view, 'update'):
+                    view.update()
+                    
+            # For NodeGraphQt specifically, try to refresh the properties bin
+            if hasattr(node, 'graph'):
+                graph = node.graph()
+                if graph and hasattr(graph, '_viewer'):
+                    viewer = graph._viewer
+                    if hasattr(viewer, 'property_bin'):
+                        prop_bin = viewer.property_bin
+                        if hasattr(prop_bin, 'add_node'):
+                            prop_bin.add_node(node)
+        except Exception as e:
+            print(f"Error refreshing node widgets: {e}")
 
 # Create a singleton instance of the signal handler
-# We need to be careful about when this is initialized - only create it when the Qt application exists
 _signal_handler = None
+_init_timer = None
 
 def get_signal_handler():
     """Get or create the signal handler singleton"""
-    global _signal_handler
-    if _signal_handler is None:
-        # Only create when we have a QApplication instance
-        if QCoreApplication.instance() is not None:
-            _signal_handler = NodeSignalHandler()
-            # Connect the signals to slots
-            _signal_handler.property_updated.connect(_signal_handler._update_property, Qt.QueuedConnection)
-            _signal_handler.status_updated.connect(_signal_handler._update_status, Qt.QueuedConnection)
+    global _signal_handler, _init_timer
+    if _signal_handler is not None:
+        return _signal_handler
+        
+    if QCoreApplication.instance() is not None:
+        print("Creating NodeSignalHandler for thread-safe UI updates")
+        _signal_handler = NodeSignalHandler()
+        
+        # Connect the signals to slots
+        _signal_handler.property_updated.connect(
+            _signal_handler._update_property, 
+            Qt.QueuedConnection
+        )
+        _signal_handler.status_updated.connect(
+            _signal_handler._update_status, 
+            Qt.QueuedConnection
+        )
+        _signal_handler.widget_refresh.connect(
+            _signal_handler._refresh_node_widgets,
+            Qt.QueuedConnection
+        )
+    else:
+        # If QApplication doesn't exist yet, try again later
+        if _init_timer is None and 'QApplication' in globals():
+            print("QApplication not ready, scheduling signal handler creation")
+            _init_timer = QTimer()
+            _init_timer.setSingleShot(True)
+            _init_timer.timeout.connect(lambda: get_signal_handler())
+            _init_timer.start(100)  # Try again in 100ms
+            
     return _signal_handler
 
 class OllamaBaseNode(BaseNode):
@@ -65,6 +130,11 @@ class OllamaBaseNode(BaseNode):
     def __init__(self):
         super(OllamaBaseNode, self).__init__()
         
+        # IMPORTANT: Initialize these FIRST to avoid errors in subclasses
+        self._property_inputs = {}  # Maps property names to input port names
+        self._input_properties = {}  # Maps input port names to property names
+        self._excluded_input_props = set()  # Properties that shouldn't get auto-inputs
+        
         # Processing state
         self.processing = False
         self.dirty = True  # Needs processing
@@ -75,10 +145,19 @@ class OllamaBaseNode(BaseNode):
         self.processing_done = True  # Flag for tracking completion
         self.processing_start_time = 0  # When processing started
         
-        # Keep track of property inputs
-        self._property_inputs = {}  # Maps property names to input port names
-        self._input_properties = {}  # Maps input port names to property names
-        self._excluded_input_props = set()  # Properties that shouldn't get auto-inputs
+        # Initialize the signal handler
+        get_signal_handler()
+    
+    def exclude_property_from_input(self, prop_name):
+        """
+        Mark a property as excluded from auto-input creation.
+        Use this before creating the property.
+        """
+        # Defensive initialization - ensure the set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        self._excluded_input_props.add(prop_name)
     
     def mark_dirty(self):
         """Mark this node as needing reprocessing"""
@@ -229,7 +308,10 @@ class OllamaBaseNode(BaseNode):
         if signal_handler:
             # Use the signal-slot mechanism to update the property on the main thread
             signal_handler.property_updated.emit(self, prop_name, value)
+            # Request UI refresh with a short delay to ensure property update took effect
+            QTimer.singleShot(50, lambda: signal_handler.widget_refresh.emit(self))
         else:
+            print(f"Warning: No signal handler available for thread-safe property update")
             # Fall back to direct update if no signal handler is available
             if hasattr(self, 'set_property'):
                 # Use super's set_property to avoid recursion
@@ -248,7 +330,10 @@ class OllamaBaseNode(BaseNode):
         if signal_handler:
             # Use the signal-slot mechanism to update the status on the main thread
             signal_handler.status_updated.emit(self, status_text)
+            # Request UI refresh with a short delay to ensure status update took effect
+            QTimer.singleShot(50, lambda: signal_handler.widget_refresh.emit(self))
         else:
+            print(f"Warning: No signal handler available for thread-safe status update")
             # Fall back to direct update if no signal handler is available
             self.status = status_text
             # Also update any status property if it exists
@@ -285,6 +370,18 @@ class OllamaBaseNode(BaseNode):
             create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        # Ensure the property inputs map exists
+        if not hasattr(self, '_property_inputs'):
+            self._property_inputs = {}
+            
+        # Ensure the input properties map exists
+        if not hasattr(self, '_input_properties'):
+            self._input_properties = {}
+            
         # Call the original method from BaseNode
         kwargs = {}
         if tab is not None:
@@ -315,6 +412,18 @@ class OllamaBaseNode(BaseNode):
             create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        # Ensure the property inputs map exists
+        if not hasattr(self, '_property_inputs'):
+            self._property_inputs = {}
+            
+        # Ensure the input properties map exists
+        if not hasattr(self, '_input_properties'):
+            self._input_properties = {}
+            
         # Call the original method from BaseNode
         kwargs = {}
         if tab is not None:
@@ -344,6 +453,18 @@ class OllamaBaseNode(BaseNode):
             create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        # Ensure the property inputs map exists
+        if not hasattr(self, '_property_inputs'):
+            self._property_inputs = {}
+            
+        # Ensure the input properties map exists
+        if not hasattr(self, '_input_properties'):
+            self._input_properties = {}
+            
         # Call the original method from BaseNode
         kwargs = {}
         if tab is not None:
@@ -373,6 +494,18 @@ class OllamaBaseNode(BaseNode):
             create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        # Ensure the property inputs map exists
+        if not hasattr(self, '_property_inputs'):
+            self._property_inputs = {}
+            
+        # Ensure the input properties map exists
+        if not hasattr(self, '_input_properties'):
+            self._input_properties = {}
+            
         # Call the original method from BaseNode
         kwargs = {}
         if tab is not None:
@@ -402,6 +535,18 @@ class OllamaBaseNode(BaseNode):
             create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+            
+        # Ensure the property inputs map exists
+        if not hasattr(self, '_property_inputs'):
+            self._property_inputs = {}
+            
+        # Ensure the input properties map exists
+        if not hasattr(self, '_input_properties'):
+            self._input_properties = {}
+            
         # Call the original method from BaseNode
         kwargs = {}
         if tab is not None:
@@ -420,13 +565,6 @@ class OllamaBaseNode(BaseNode):
             
         return result
     
-    def exclude_property_from_input(self, prop_name):
-        """
-        Mark a property as excluded from auto-input creation.
-        Use this before creating the property.
-        """
-        self._excluded_input_props.add(prop_name)
-    
     def get_property_value(self, prop_name):
         """
         Get the value of a property, checking input connections first.
@@ -440,7 +578,7 @@ class OllamaBaseNode(BaseNode):
             The value from the input connection or the property value
         """
         # Check if this property has a corresponding input
-        if prop_name in self._property_inputs:
+        if hasattr(self, '_property_inputs') and prop_name in self._property_inputs:
             input_name = self._property_inputs[prop_name]
             input_value = self.get_input_data(input_name)
             
@@ -459,6 +597,10 @@ class OllamaBaseNode(BaseNode):
     
     def _should_exclude_property(self, prop_name):
         """Check if a property should be excluded from auto-input creation"""
+        # Ensure the excluded properties set exists
+        if not hasattr(self, '_excluded_input_props'):
+            self._excluded_input_props = set()
+        
         # Common properties that shouldn't get inputs
         default_excludes = {
             'status_info', 'result_preview', 'response_preview', 'input_preview'

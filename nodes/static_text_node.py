@@ -1,3 +1,4 @@
+# ============= Modified static_text_node.py file ==============
 from nodes.base_node import OllamaBaseNode
 
 class StaticTextNode(OllamaBaseNode):
@@ -19,11 +20,14 @@ class StaticTextNode(OllamaBaseNode):
         # Set node name that will be displayed
         self.set_name('Static Text')
         
+        # Initialize these properties first to avoid errors
+        self._excluded_input_props = set()
+        self.exclude_property_from_input('status_info')
+        
         # Create property for text content - this will automatically create an input
         self.add_text_input('text', 'Text Content', 'Enter text here...')
         
-        # Exclude status from auto-inputs
-        self.exclude_property_from_input('status_info')
+        # Add status property
         self.add_text_input('status_info', 'Status', 'Ready')
         
         # Create the output port
