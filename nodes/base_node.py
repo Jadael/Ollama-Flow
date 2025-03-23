@@ -2,6 +2,7 @@ from NodeGraphQt import BaseNode
 import requests
 import json
 import time
+import copy
 from threading import Thread
 from PySide6.QtCore import QObject, Signal, Qt, Slot, QThread, QCoreApplication, QTimer
 
@@ -128,6 +129,7 @@ class OllamaBaseNode(BaseNode):
         self._property_inputs = {}  # Maps property names to input port names
         self._input_properties = {}  # Maps input port names to property names
         self._excluded_input_props = set()  # Properties that shouldn't get auto-inputs
+        self._property_values = {}  # Cache of property values to detect changes
         
         # Processing state
         self.processing = False
@@ -140,10 +142,11 @@ class OllamaBaseNode(BaseNode):
         self.processing_start_time = 0  # When processing started
         
         # Add recalculation mode property - this is a node configuration option
+        # Renamed for clarity on behavior
         self.exclude_property_from_input('recalculation_mode')
         self.add_combo_menu('recalculation_mode', 'Recalculation Mode', 
-                           ['Recalculate if dirty', 'Always recalculate', 'Never recalculate'], 
-                           'Recalculate if dirty', create_input=False, tab='Configuration')
+                           ['Dirty if inputs change', 'Always dirty', 'Never dirty'], 
+                           'Dirty if inputs change', tab='Configuration')
         
         # Initialize the signal handler
         get_signal_handler()
@@ -161,15 +164,31 @@ class OllamaBaseNode(BaseNode):
     
     def mark_dirty(self):
         """Mark this node as needing reprocessing"""
+        # Check if the node should be marked as dirty based on recalculation mode
+        recalc_mode = self.get_property('recalculation_mode')
+        
+        # Never mark as dirty if the mode is 'Never dirty'
+        if recalc_mode == 'Never dirty':
+            print(f"Node {self.name()}: Not marking dirty (Never dirty mode)")
+            return
+            
+        # Always mark as dirty for other modes
         if not self.dirty:
             self.dirty = True
             self.status = "Ready"
+            print(f"Node {self.name()}: Marked as dirty")
             
-            # Mark downstream nodes as dirty
-            for port in self.output_ports():
-                for connected_port in port.connected_ports():
-                    connected_node = connected_port.node()
-                    if hasattr(connected_node, 'mark_dirty'):
+            # Mark downstream nodes as dirty if they use 'Dirty if inputs change'
+            self._mark_downstream_dirty()
+    
+    def _mark_downstream_dirty(self):
+        """Mark downstream nodes as dirty if appropriate"""
+        for port in self.output_ports():
+            for connected_port in port.connected_ports():
+                connected_node = connected_port.node()
+                if hasattr(connected_node, 'mark_dirty'):
+                    recalc_mode = connected_node.get_property('recalculation_mode')
+                    if recalc_mode != 'Never dirty':  # Only propagate if not 'Never dirty'
                         connected_node.mark_dirty()
     
     def execute(self):
@@ -184,7 +203,10 @@ class OllamaBaseNode(BaseNode):
         return self.compute()
         
     def compute(self):
-        """Process this node (should be called when inputs change)"""
+        """
+        Process this node (should be called when inputs change).
+        Enhanced with improved dependency handling and output change detection.
+        """
         # Update status
         self.status = "Processing..."
         self.set_property('status_info', "Processing...")
@@ -193,25 +215,37 @@ class OllamaBaseNode(BaseNode):
         # Get the current recalculation mode
         recalculation_mode = self.get_property('recalculation_mode')
         
-        # If already processing, just return cached output
+        # If already processing, just return cached output to prevent cycles
         if self.processing:
+            print(f"Node {self.name()}: Already processing, returning cached output to avoid cycle")
             return self.output_cache
         
         # Handle caching based on recalculation mode
-        if recalculation_mode == 'Never recalculate' and self.output_cache:
+        if recalculation_mode == 'Never dirty' and self.output_cache:
             self.status = "Complete (cached)"
             self.set_property('status_info', "Complete (cached)")
-            print(f"Node {self.name()}: Using cached output (forced by Never recalculate)")
+            print(f"Node {self.name()}: Using cached output (Never dirty mode)")
             return self.output_cache
             
         # Default behavior: if not dirty and we have cached output, return it
-        if recalculation_mode == 'Recalculate if dirty' and not self.dirty and self.output_cache:
-            self.status = "Complete"
-            self.set_property('status_info', "Complete")
+        if recalculation_mode == 'Dirty if inputs change' and not self.dirty and self.output_cache:
+            self.status = "Complete (cached)"
+            self.set_property('status_info', "Complete (cached)")
             print(f"Node {self.name()}: Using cached output (not dirty)")
             return self.output_cache
-            
-        # For 'Always recalculate', we skip the cache check and proceed to execution
+        
+        # Process all input dependencies first
+        # This ensures all inputs are up-to-date before we execute
+        try:
+            self._process_input_dependencies()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.processing_error = str(e)
+            error_msg = f"Error in dependencies: {str(e)[:30]}..."
+            self.status = error_msg
+            self.set_property('status_info', error_msg)
+            return {}
         
         # Set processing state
         self.processing = True
@@ -225,8 +259,19 @@ class OllamaBaseNode(BaseNode):
             
             # For synchronous nodes, update cache and state
             if not self.is_async_node:
-                self.output_cache = result
+                # Check if output has changed
+                output_changed = self._has_output_changed(result)
+                
+                # Update the cache
+                self.output_cache = copy.deepcopy(result)
+                
+                # Clear dirty flag
                 self.dirty = False
+                
+                # If output changed and mode isn't 'Never dirty', mark downstream nodes dirty
+                if output_changed and recalculation_mode != 'Never dirty':
+                    self._mark_downstream_dirty()
+                
                 self.status = "Complete"
                 self.set_property('status_info', "Complete")
                 print(f"Node {self.name()}: Execution complete, status set to Complete")
@@ -238,7 +283,7 @@ class OllamaBaseNode(BaseNode):
             import traceback
             traceback.print_exc()
             self.processing_error = str(e)
-            error_msg = f"Error: {str(e)[:20]}..."
+            error_msg = f"Error: {str(e)[:30]}..."
             self.status = error_msg
             self.set_property('status_info', error_msg)
             print(f"Node {self.name()}: Execution error: {error_msg}")
@@ -251,6 +296,102 @@ class OllamaBaseNode(BaseNode):
             if not self.is_async_node:
                 self.processing = False
     
+    def _has_output_changed(self, new_output):
+        """Check if the output has changed compared to the cached output"""
+        if not hasattr(self, 'output_cache') or not self.output_cache:
+            return True  # No previous output, so it has changed
+            
+        if set(new_output.keys()) != set(self.output_cache.keys()):
+            return True  # Different output keys
+            
+        # Compare values for each output
+        for key, value in new_output.items():
+            if key not in self.output_cache:
+                return True  # New output key
+                
+            # Special handling for strings (most common case)
+            if isinstance(value, str) and isinstance(self.output_cache[key], str):
+                if value != self.output_cache[key]:
+                    return True  # String content changed
+            else:
+                # For non-string values, do a simple comparison
+                # This is not perfect for complex objects but a reasonable compromise
+                if value != self.output_cache[key]:
+                    return True
+                    
+        return False  # No changes detected
+    
+    def _process_input_dependencies(self):
+        """
+        Processes all input dependencies to ensure they're computed before this node.
+        """
+        # Get all input ports
+        if callable(getattr(self, 'input_ports', None)):
+            input_ports = self.input_ports()
+        elif hasattr(self, 'inputs'):
+            input_ports = self.inputs
+        else:
+            input_ports = []
+        
+        # Process each connected input
+        for input_port in input_ports:
+            # Get connected ports
+            if callable(getattr(input_port, 'connected_ports', None)):
+                connected_ports = input_port.connected_ports()
+            elif hasattr(input_port, 'connections'):
+                connected_ports = input_port.connections
+            else:
+                connected_ports = []
+            
+            # Process each connected node
+            for connected_port in connected_ports:
+                connected_node = connected_port.node()
+                
+                # Skip if the node is already processing (cycle detection)
+                if hasattr(connected_node, 'processing') and connected_node.processing:
+                    print(f"Warning: Detected execution cycle between {self.name()} and {connected_node.name()}")
+                    continue
+                
+                # Process connected node if it's dirty
+                if hasattr(connected_node, 'dirty') and connected_node.dirty and hasattr(connected_node, 'compute'):
+                    print(f"Node {self.name()}: Processing dependency {connected_node.name()}")
+                    connected_node.compute()
+                
+                # Wait if the node is asynchronous and still processing
+                if hasattr(connected_node, 'processing') and connected_node.processing:
+                    # Get the timeout value - default to 120 seconds (2 minutes)
+                    timeout = 120
+                    start_wait = time.time()
+                    
+                    print(f"Node {self.name()}: Waiting for async dependency {connected_node.name()}")
+                    
+                    while time.time() - start_wait < timeout:
+                        # If the connected node finished processing, break out of the loop
+                        if hasattr(connected_node, 'processing_done') and connected_node.processing_done:
+                            break
+                            
+                        # Sleep briefly to avoid busy waiting
+                        time.sleep(0.1)
+                        
+                        # Check again if it's still processing
+                        if not hasattr(connected_node, 'processing') or not connected_node.processing:
+                            break
+                    
+                    # If we timed out and node is still processing
+                    if hasattr(connected_node, 'processing') and connected_node.processing:
+                        if not hasattr(connected_node, 'processing_done') or not connected_node.processing_done:
+                            wait_time = time.time() - start_wait
+                            timeout_msg = f"Timeout waiting for {connected_node.name()} after {wait_time:.1f}s"
+                            self.status = timeout_msg
+                            print(f"Node {self.name()}: {timeout_msg}")
+                            raise TimeoutError(f"Timed out waiting for input from '{connected_node.name()}'")
+                
+                # Check for errors in the dependency
+                if hasattr(connected_node, 'processing_error') and connected_node.processing_error:
+                    error_msg = f"Error in dependency {connected_node.name()}: {connected_node.processing_error}"
+                    print(f"Node {self.name()}: {error_msg}")
+                    raise ValueError(error_msg)
+
     def get_input_data(self, input_name):
         """Get data from an input port by name"""
         # Get the input port
@@ -371,7 +512,7 @@ class OllamaBaseNode(BaseNode):
 
     # ----- Enhanced property methods -----
     
-    def add_text_input(self, prop_name, label, default_value="", create_input=True, tab=None):
+    def add_text_input(self, prop_name, label, default_value="", tab=None):
         """
         Add a text input property with an optional corresponding input port.
         
@@ -379,7 +520,6 @@ class OllamaBaseNode(BaseNode):
             prop_name: Name of the property
             label: Display label for the property
             default_value: Default value for the property
-            create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
         # Ensure the excluded properties set exists
@@ -401,8 +541,15 @@ class OllamaBaseNode(BaseNode):
             
         result = super(OllamaBaseNode, self).add_text_input(prop_name, label, default_value, **kwargs)
         
-        # Create the corresponding input port if required
-        if create_input and not self._should_exclude_property(prop_name):
+        # Store the initial property value for change detection
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[prop_name] = default_value
+        
+        # Create the corresponding input port if not excluded
+        should_create_input = not self._should_exclude_property(prop_name)
+        
+        if should_create_input:
             input_name = self._get_input_name_for_property(prop_name)
             self.add_input(input_name)
             
@@ -412,7 +559,7 @@ class OllamaBaseNode(BaseNode):
             
         return result
     
-    def add_combo_menu(self, prop_name, label, items, default="", create_input=True, tab=None):
+    def add_combo_menu(self, prop_name, label, items, default="", tab=None):
         """
         Add a combo menu property with an optional corresponding input port.
         
@@ -421,7 +568,6 @@ class OllamaBaseNode(BaseNode):
             label: Display label for the property
             items: List of items for the combo menu
             default: Default selected item
-            create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
         # Ensure the excluded properties set exists
@@ -443,8 +589,15 @@ class OllamaBaseNode(BaseNode):
             
         result = super(OllamaBaseNode, self).add_combo_menu(prop_name, label, items, default, **kwargs)
         
-        # Create the corresponding input port if required
-        if create_input and not self._should_exclude_property(prop_name):
+        # Store the initial property value for change detection
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[prop_name] = default
+        
+        # Create the corresponding input port if not excluded
+        should_create_input = not self._should_exclude_property(prop_name)
+        
+        if should_create_input:
             input_name = self._get_input_name_for_property(prop_name)
             self.add_input(input_name)
             
@@ -454,7 +607,7 @@ class OllamaBaseNode(BaseNode):
             
         return result
     
-    def add_checkbox(self, prop_name, label, default=False, create_input=True, tab=None):
+    def add_checkbox(self, prop_name, label, default=False, tab=None):
         """
         Add a checkbox property with an optional corresponding input port.
         
@@ -462,7 +615,6 @@ class OllamaBaseNode(BaseNode):
             prop_name: Name of the property
             label: Display label for the property
             default: Default state (True/False)
-            create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
         # Ensure the excluded properties set exists
@@ -484,8 +636,15 @@ class OllamaBaseNode(BaseNode):
             
         result = super(OllamaBaseNode, self).add_checkbox(prop_name, label, default, **kwargs)
         
-        # Create the corresponding input port if required
-        if create_input and not self._should_exclude_property(prop_name):
+        # Store the initial property value for change detection
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[prop_name] = default
+        
+        # Create the corresponding input port if not excluded
+        should_create_input = not self._should_exclude_property(prop_name)
+        
+        if should_create_input:
             input_name = self._get_input_name_for_property(prop_name)
             self.add_input(input_name)
             
@@ -495,7 +654,7 @@ class OllamaBaseNode(BaseNode):
             
         return result
     
-    def add_float_input(self, prop_name, label, default=0.0, create_input=True, tab=None):
+    def add_float_input(self, prop_name, label, default=0.0, tab=None):
         """
         Add a float input property with an optional corresponding input port.
         
@@ -503,7 +662,6 @@ class OllamaBaseNode(BaseNode):
             prop_name: Name of the property
             label: Display label for the property
             default: Default value
-            create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
         # Ensure the excluded properties set exists
@@ -525,8 +683,15 @@ class OllamaBaseNode(BaseNode):
             
         result = super(OllamaBaseNode, self).add_float_input(prop_name, label, default, **kwargs)
         
-        # Create the corresponding input port if required
-        if create_input and not self._should_exclude_property(prop_name):
+        # Store the initial property value for change detection
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[prop_name] = default
+        
+        # Create the corresponding input port if not excluded
+        should_create_input = not self._should_exclude_property(prop_name)
+        
+        if should_create_input:
             input_name = self._get_input_name_for_property(prop_name)
             self.add_input(input_name)
             
@@ -536,7 +701,7 @@ class OllamaBaseNode(BaseNode):
             
         return result
     
-    def add_int_input(self, prop_name, label, default=0, create_input=True, tab=None):
+    def add_int_input(self, prop_name, label, default=0, tab=None):
         """
         Add an integer input property with an optional corresponding input port.
         
@@ -544,7 +709,6 @@ class OllamaBaseNode(BaseNode):
             prop_name: Name of the property
             label: Display label for the property
             default: Default value
-            create_input: Whether to create a corresponding input port
             tab: Optional tab name to place the property in
         """
         # Ensure the excluded properties set exists
@@ -566,8 +730,15 @@ class OllamaBaseNode(BaseNode):
             
         result = super(OllamaBaseNode, self).add_int_input(prop_name, label, default, **kwargs)
         
-        # Create the corresponding input port if required
-        if create_input and not self._should_exclude_property(prop_name):
+        # Store the initial property value for change detection
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[prop_name] = default
+        
+        # Create the corresponding input port if not excluded
+        should_create_input = not self._should_exclude_property(prop_name)
+        
+        if should_create_input:
             input_name = self._get_input_name_for_property(prop_name)
             self.add_input(input_name)
             
@@ -615,7 +786,7 @@ class OllamaBaseNode(BaseNode):
         
         # Common properties that shouldn't get inputs
         default_excludes = {
-            'status_info', 'result_preview', 'response_preview', 'input_preview'
+            'status_info', 'result_preview', 'response_preview', 'input_preview', 'recalculation_mode'
         }
         
         if prop_name in default_excludes or prop_name in self._excluded_input_props:
@@ -632,10 +803,11 @@ class OllamaBaseNode(BaseNode):
         """Override to check inputs first"""
         return self.get_property_value(name)
     
-    # Add a thread-safe version of set_property
+    # Override set_property to detect changes and mark node as dirty
     def set_property(self, name, value, **kwargs):
         """
-        Override set_property to use thread-safe version when needed.
+        Override set_property to use thread-safe version when needed
+        and to track property changes to mark the node as dirty.
         
         Args:
             name: Name of the property to set
@@ -651,6 +823,59 @@ class OllamaBaseNode(BaseNode):
         if current_thread != app_thread:
             self.thread_safe_set_property(name, value)
             return
+
+        # Get old value for change detection
+        old_value = None
+        if hasattr(self, '_property_values'):
+            old_value = self._property_values.get(name)
+        
+        # Call the original method
+        result = super(OllamaBaseNode, self).set_property(name, value, **kwargs)
+        
+        # Store the new value
+        if not hasattr(self, '_property_values'):
+            self._property_values = {}
+        self._property_values[name] = value
+        
+        # Check if this property change should mark the node as dirty
+        if self._should_mark_dirty_on_property_change(name, old_value, value):
+            print(f"Node {self.name()}: Property '{name}' changed, marking as dirty")
+            self.mark_dirty()
             
-        # Otherwise, call the original method
-        return super(OllamaBaseNode, self).set_property(name, value, **kwargs)
+        return result
+    
+    def _should_mark_dirty_on_property_change(self, prop_name, old_value, new_value):
+        """
+        Determine if a property change should mark the node as dirty.
+        
+        Args:
+            prop_name: Name of the property
+            old_value: Previous property value
+            new_value: New property value
+            
+        Returns:
+            True if the node should be marked as dirty, False otherwise
+        """
+        # Get recalculation mode
+        recalc_mode = self.get_property('recalculation_mode')
+        
+        # Always dirty mode: property changes don't need to mark it dirty
+        if recalc_mode == 'Always dirty':
+            return False
+            
+        # Never dirty mode: property changes should not mark it dirty
+        if recalc_mode == 'Never dirty':
+            return False
+            
+        # Don't mark dirty for these property types
+        if prop_name in {'status_info', 'result_preview', 'response_preview', 'input_preview', 
+                        'output_preview', 'raw_response_preview'} or \
+           prop_name.endswith(('_preview', '_info', '_status')):
+            return False
+            
+        # Don't mark dirty if recalculation mode is being changed
+        if prop_name == 'recalculation_mode':
+            return False
+            
+        # Mark dirty if values are different
+        return old_value != new_value

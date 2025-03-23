@@ -5,6 +5,7 @@ Adds tooltips to ports and connections showing node details and data values.
 from PySide6.QtCore import Qt, QEvent, QPoint, QRect, QTimer, QObject
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPainterPath
 from PySide6.QtWidgets import QToolTip, QGraphicsItem, QApplication
+import traceback
 
 class PortTooltipManager(QObject):
     """
@@ -26,6 +27,7 @@ class PortTooltipManager(QObject):
         self.hover_timer.setSingleShot(True)
         self.hover_timer.timeout.connect(self.show_tooltip)
         self.hover_pos = QPoint()
+        self.debug_mode = False  # Set to True for verbose value retrieval info
         
         # Disable native tooltips in the viewer if possible
         if hasattr(viewer, 'setToolTip'):
@@ -53,8 +55,8 @@ class PortTooltipManager(QObject):
             
             # Try to identify port or connection items
             for item in items:
-                # Check if it's a port
-                if hasattr(item, 'port_type') or ('port' in str(type(item)).lower()):
+                # Check if it's a port - try different detection methods
+                if self._is_port_item(item):
                     port_item = item
                     break
                 
@@ -108,8 +110,8 @@ class PortTooltipManager(QObject):
         """
         tooltip_lines = []
         
-        # Handle port items
-        if hasattr(item, 'port_type') or ('port' in str(type(item)).lower()):
+        # Handle port items - check more comprehensively
+        if self._is_port_item(item):
             # Extract port and node info
             port = self._extract_port_from_item(item)
             if not port:
@@ -119,49 +121,75 @@ class PortTooltipManager(QObject):
             node = self._get_port_node(port)
             node_name = self._get_node_name(node)
             
-            # Get connected ports
-            connected_ports = self._get_port_connections(port)
-            if not connected_ports:
-                # If not connected, just show the port info
-                tooltip_lines.append(f"<b>Port:</b> {port_name}")
-                tooltip_lines.append(f"<b>Node:</b> {node_name}")
-                tooltip_lines.append("<i>Not connected</i>")
-                return "<br>".join(tooltip_lines)
+            tooltip_lines.append(f"<b>Port:</b> {port_name}")
+            tooltip_lines.append(f"<b>Node:</b> {node_name}")
             
-            # For each connection, show source -> target and value
-            for conn_port in connected_ports:
-                conn_node = self._get_port_node(conn_port)
-                if not conn_node:
-                    continue
-                    
-                # Determine source and target (regardless of which side we're hovering)
-                is_output = self._is_output_port(port)
-                is_connected_output = self._is_output_port(conn_port)
-                
-                # Always show source -> target format
-                if is_output:
-                    source_node, source_port = node, port
-                    target_node, target_port = conn_node, conn_port
-                else:
-                    source_node, source_port = conn_node, conn_port
-                    target_node, target_port = node, port
-                
-                source_name = f"{self._get_node_name(source_node)} : {self._get_port_name(source_port)}"
-                target_name = f"{self._get_node_name(target_node)} : {self._get_port_name(target_port)}"
-                
-                tooltip_lines.append("<b>Connection:</b>")
-                tooltip_lines.append(f"<b>From:</b> {source_name}")
-                tooltip_lines.append(f"<b>To:</b> {target_name}")
-                
-                # Get the connection value from the output port (source)
-                value = self._get_raw_connection_value(source_node, source_port)
+            # Try multiple connection detection methods
+            connected_ports = self._get_port_connections(port, node)
+            port_is_connected = self._port_has_connections(port, node)
+            
+            # If it's an output port, show its current value directly
+            if self._is_output_port(port, node):
+                # Get the value from this port
+                value = self._get_raw_connection_value(node, port)
                 if value is not None:
                     formatted_value = self._format_value(value)
                     if formatted_value:
-                        tooltip_lines.append("<b>Value:</b>")
+                        tooltip_lines.append("<b>Current Value:</b>")
                         tooltip_lines.append(formatted_value)
+            
+            # If not connected, say so and stop here
+            if not connected_ports and not port_is_connected:
+                tooltip_lines.append("<i>Not connected</i>")
+                return "<br>".join(tooltip_lines)
+            
+            # If we have actual port objects
+            if connected_ports:
+                for conn_port in connected_ports:
+                    conn_node = self._get_port_node(conn_port)
+                    if not conn_node:
+                        continue
+                        
+                    # Determine source and target (regardless of which side we're hovering)
+                    is_output = self._is_output_port(port, node)
+                    
+                    # Always show source -> target format
+                    if is_output:
+                        source_node, source_port = node, port
+                        target_node, target_port = conn_node, conn_port
+                    else:
+                        source_node, source_port = conn_node, conn_port
+                        target_node, target_port = node, port
+                    
+                    source_name = f"{self._get_node_name(source_node)} : {self._get_port_name(source_port)}"
+                    target_name = f"{self._get_node_name(target_node)} : {self._get_port_name(target_port)}"
+                    
+                    tooltip_lines.append("<b>Connected:</b>")
+                    tooltip_lines.append(f"<b>From:</b> {source_name}")
+                    tooltip_lines.append(f"<b>To:</b> {target_name}")
+                    
+                    # Get the connection value from the output port (source)
+                    value = self._get_raw_connection_value(source_node, source_port)
+                    if value is not None:
+                        formatted_value = self._format_value(value)
+                        if formatted_value:
+                            tooltip_lines.append("<b>Value:</b>")
+                            tooltip_lines.append(formatted_value)
+                    
+                    break  # Only show the first connection for simplicity
+            # If the port is connected but we couldn't get the connected port objects
+            elif port_is_connected:
+                tooltip_lines.append("<b>Connected</b> (connection details not available)")
                 
-                break  # Only show the first connection for simplicity
+                # Even if we don't have port details, try to get the value
+                if not self._is_output_port(port, node):
+                    # For input ports, try to get the value from the node's property mappings
+                    value = self._get_input_port_value(node, port)
+                    if value is not None:
+                        formatted_value = self._format_value(value)
+                        if formatted_value:
+                            tooltip_lines.append("<b>Value:</b>")
+                            tooltip_lines.append(formatted_value)
         
         # Handle connection items
         elif hasattr(item, 'source_port') and hasattr(item, 'target_port'):
@@ -227,34 +255,228 @@ class PortTooltipManager(QObject):
         
         return "<br>".join(tooltip_lines) if tooltip_lines else ""
     
+    def _is_port_item(self, item):
+        """More comprehensive check to detect if an item is a port"""
+        # Common signatures for port items in different NodeGraphQt versions
+        if hasattr(item, 'port_type'):
+            return True
+        if 'port' in str(type(item)).lower():
+            return True
+        if hasattr(item, 'nodzInst') and hasattr(item, 'portCircle'):
+            return True
+        if hasattr(item, 'port'):
+            return True
+        if hasattr(item, '_port'):
+            return True
+        # Additional checks for more specific NodeGraphQt implementations
+        if hasattr(item, 'itemChange') and ('port' in str(item.__class__.__name__).lower()):
+            return True
+        return False
+    
     def _extract_port_from_item(self, item):
         """Extract the port object from a port item"""
         if hasattr(item, 'port'):
             return item.port
         elif hasattr(item, '_port'):
             return item._port
-        elif hasattr(item, 'port_type'):
+        elif hasattr(item, 'port_type') or 'port' in str(type(item)).lower():
             return item  # The item itself is the port
         
         return None
     
-    def _is_output_port(self, port):
-        """Determine if a port is an output port"""
+    def _port_has_connections(self, port, node):
+        """Check if a port has any connections via multiple methods"""
+        # Method 1: Check connected_ports attribute/method
+        if hasattr(port, 'connected_ports'):
+            if callable(port.connected_ports):
+                connections = port.connected_ports()
+                if connections:
+                    return True
+            elif port.connected_ports:
+                return True
+        
+        # Method 2: Check connections attribute
+        if hasattr(port, 'connections'):
+            if callable(port.connections):
+                connections = port.connections()
+            else:
+                connections = port.connections
+            if connections:
+                return True
+        
+        # Method 3: Check node for connections
+        if node:
+            # Check if there's a scene with edges
+            if hasattr(node, 'scene') and callable(node.scene):
+                scene = node.scene()
+                if scene and hasattr(scene, 'edges'):
+                    for edge in scene.edges:
+                        if hasattr(edge, 'source') and hasattr(edge, 'target'):
+                            if (hasattr(edge.source, 'node') and edge.source.node() == node) or \
+                               (hasattr(edge.target, 'node') and edge.target.node() == node):
+                                return True
+            
+            # Check for visible connections in the node view
+            if hasattr(node, 'view') and callable(node.view):
+                view = node.view()
+                if view:
+                    # Look for connection lines
+                    for child in view.childItems():
+                        if 'connection' in str(type(child)).lower() or \
+                           'edge' in str(type(child)).lower():
+                            return True
+        
+        # Method 4: Check for _connected_ports attribute
+        if hasattr(port, '_connected_ports') and port._connected_ports:
+            return True
+        
+        # Method 5: Check via port's parent node for explicit connection tracking
+        port_name = self._get_port_name(port)
+        if node and hasattr(node, '_input_properties') and hasattr(node, '_property_inputs'):
+            # Check if this is an OllamaBaseNode with mapped port->property connections
+            if port_name in node._input_properties:
+                return True
+        
+        # Method 6: Check for edges in the scene via port name
+        if node and hasattr(node, 'graph') and callable(node.graph):
+            graph = node.graph()
+            if graph and hasattr(graph, 'edges'):
+                port_node_name = self._get_node_name(node)
+                for edge in graph.edges:
+                    # Check if this edge connects to our port
+                    if (hasattr(edge, 'source_name') and hasattr(edge, 'source_node') and
+                        edge.source_name == port_name and edge.source_node == port_node_name):
+                        return True
+                    if (hasattr(edge, 'target_name') and hasattr(edge, 'target_node') and
+                        edge.target_name == port_name and edge.target_node == port_node_name):
+                        return True
+        
+        return False
+    
+    def _is_output_port(self, port, node=None):
+        """Determine if a port is an output port using various methods"""
+        # Method 1: Check port_type attribute
         if hasattr(port, 'port_type'):
             return port.port_type == 'out'
-        elif hasattr(port, 'isOutput') and callable(port.isOutput):
+        
+        # Method 2: Check explicit output flag
+        if hasattr(port, 'isOutput') and callable(port.isOutput):
             return port.isOutput()
-        elif hasattr(port, 'is_output') and callable(port.is_output):
+        if hasattr(port, 'is_output') and callable(port.is_output):
             return port.is_output()
-        elif hasattr(port, 'is_output'):
+        if hasattr(port, 'is_output'):
             return port.is_output
         
-        # Try to determine from connections
-        if hasattr(port, 'connected_ports') and callable(port.connected_ports):
-            # Often output ports connect TO other ports, inputs connect FROM others
-            return len(port.connected_ports()) > 0
+        # Method 3: Check if port is in node's outputs collection
+        if node:
+            port_name = self._get_port_name(port)
+            # Check if this is an input or output port based on the node's collections
+            if hasattr(node, 'output_ports') and callable(node.output_ports):
+                outputs = node.output_ports()
+                for output in outputs:
+                    if self._get_port_name(output) == port_name:
+                        return True
+            
+            # Check ports by side (common in graphical node systems)
+            if hasattr(port, 'port_side'):
+                return port.port_side in ['right', 'output', 'out']
         
-        return False  # Default assumption: it's an input port
+        # Method 4: Check position in node (outputs are usually on the right)
+        if hasattr(port, 'pos') and callable(port.pos):
+            pos = port.pos()
+            node_rect = None
+            if node and hasattr(node, 'boundingRect') and callable(node.boundingRect):
+                node_rect = node.boundingRect()
+                if pos.x() > node_rect.width() / 2:
+                    return True
+        
+        # Method 5: Check the port name for common patterns
+        port_name = self._get_port_name(port)
+        output_indicators = ['output', 'out', 'result', 'return', 'response', 'text']
+        for indicator in output_indicators:
+            if indicator.lower() == port_name.lower():
+                return True
+        
+        # Default: Assume false (input port)
+        return False
+    
+    def _get_port_connections(self, port, node=None):
+        """Get connected ports for a given port, trying multiple methods"""
+        if not port:
+            return []
+        
+        connected_ports = []
+        
+        # Method 1: Use connected_ports method/attribute
+        if hasattr(port, 'connected_ports'):
+            if callable(port.connected_ports):
+                connected_ports = port.connected_ports()
+            else:
+                connected_ports = port.connected_ports
+            
+            if connected_ports:
+                return connected_ports
+        
+        # Method 2: Check connections attribute
+        if hasattr(port, 'connections'):
+            connections = None
+            if callable(port.connections):
+                connections = port.connections()
+            else:
+                connections = port.connections
+                
+            # Handle different connection object formats
+            if connections:
+                if hasattr(connections[0], 'source_port') and hasattr(connections[0], 'target_port'):
+                    # Connection objects have source and target ports
+                    if port == connections[0].source_port:
+                        return [conn.target_port for conn in connections]
+                    else:
+                        return [conn.source_port for conn in connections]
+                else:
+                    # Connections are already port objects
+                    return connections
+        
+        # Method 3: Check _connected_ports attribute
+        if hasattr(port, '_connected_ports'):
+            if port._connected_ports:
+                return port._connected_ports
+        
+        # Method 4: Check connectedPorts method
+        if hasattr(port, 'connectedPorts') and callable(port.connectedPorts):
+            return port.connectedPorts()
+        
+        # Method 5: Try to get connections from the scene/graph
+        if node and hasattr(node, 'graph') and callable(node.graph):
+            graph = node.graph()
+            if graph and hasattr(graph, 'edges'):
+                # Identify our port
+                port_name = self._get_port_name(port)
+                node_name = self._get_node_name(node)
+                is_output = self._is_output_port(port, node)
+                
+                # Get all connected ports
+                for edge in graph.edges:
+                    connected_port = None
+                    connected_node_name = None
+                    
+                    # Check based on direction
+                    if is_output and hasattr(edge, 'source_name') and hasattr(edge, 'target_node'):
+                        if edge.source_name == port_name and edge.source_node == node_name:
+                            connected_node_name = edge.target_node
+                            connected_port_name = edge.target_name
+                    elif not is_output and hasattr(edge, 'target_name') and hasattr(edge, 'source_node'):
+                        if edge.target_name == port_name and edge.target_node == node_name:
+                            connected_node_name = edge.source_node
+                            connected_port_name = edge.source_name
+                    
+                    # If we found a connected node, add to our list
+                    if connected_node_name:
+                        # Try to find the actual port object
+                        connected_port = {"name": connected_port_name, "node_name": connected_node_name}
+                        connected_ports.append(connected_port)
+        
+        return connected_ports
     
     def _get_port_node(self, port):
         """Extract the node from a port object, handling different implementations"""
@@ -271,6 +493,11 @@ class PortTooltipManager(QObject):
             return port.parent()
         elif hasattr(port, 'parentItem') and callable(port.parentItem):
             return port.parentItem()
+        
+        # If port is a dictionary with node_name (from our custom approach)
+        if isinstance(port, dict) and 'node_name' in port:
+            # We don't have the actual node object, but we have the name
+            return {"name": port["node_name"]}
         
         return None
     
@@ -290,6 +517,10 @@ class PortTooltipManager(QObject):
         elif hasattr(port, 'displayName'):
             return port.displayName
         
+        # If port is a dictionary with name (from our custom approach)
+        if isinstance(port, dict) and 'name' in port:
+            return port["name"]
+        
         return "Unknown"
     
     def _get_node_name(self, node):
@@ -308,35 +539,42 @@ class PortTooltipManager(QObject):
         elif hasattr(node, 'getName') and callable(node.getName):
             return node.getName()
         
+        # If node is a dictionary with name (from our custom approach)
+        if isinstance(node, dict) and 'name' in node:
+            return node["name"]
+        
         return "Unknown"
     
-    def _get_port_connections(self, port):
-        """Get connected ports for a given port, handling different implementations"""
-        if not port:
-            return []
+    def _get_input_port_value(self, node, port):
+        """Get the value coming into an input port through property mapping"""
+        if not node or not port:
+            return None
             
-        if hasattr(port, 'connected_ports') and callable(port.connected_ports):
-            return port.connected_ports()
-        elif hasattr(port, 'connections'):
-            if callable(port.connections):
-                connections = port.connections()
-            else:
-                connections = port.connections
+        try:
+            # Get the port name
+            port_name = self._get_port_name(port)
+            
+            # Check if we have property mappings (for OllamaBaseNode)
+            if hasattr(node, '_input_properties') and port_name in node._input_properties:
+                prop_name = node._input_properties[port_name]
                 
-            # If connections is a list of connection objects, extract the connected ports
-            if connections and hasattr(connections[0], 'source_port') and hasattr(connections[0], 'target_port'):
-                if port == connections[0].source_port:
-                    return [conn.target_port for conn in connections]
-                else:
-                    return [conn.source_port for conn in connections]
-                    
-            return connections
-        elif hasattr(port, 'connectedPorts') and callable(port.connectedPorts):
-            return port.connectedPorts()
-        elif hasattr(port, '_connected_ports'):
-            return port._connected_ports
+                # Use the node's get_property_value method which checks inputs first
+                if hasattr(node, 'get_property_value') and callable(node.get_property_value):
+                    return node.get_property_value(prop_name)
+                
+                # Fallback to regular property getter
+                if hasattr(node, 'get_property') and callable(node.get_property):
+                    return node.get_property(prop_name)
+            
+            # Try to get the value via the node's direct input tracking
+            if hasattr(node, 'get_input_data') and callable(node.get_input_data):
+                return node.get_input_data(port_name)
+        except Exception as e:
+            if self.debug_mode:
+                print(f"Error getting input port value: {e}")
+                traceback.print_exc()
         
-        return []
+        return None
     
     def _get_raw_connection_value(self, node, port):
         """
@@ -352,6 +590,8 @@ class PortTooltipManager(QObject):
         if not node:
             return None
             
+        debug_info = [] if self.debug_mode else None
+        
         # Get port name
         port_name = port
         if hasattr(port, 'name') and callable(port.name):
@@ -360,43 +600,110 @@ class PortTooltipManager(QObject):
             port_name = port.name
         elif hasattr(port, '_name'):
             port_name = port._name
+        elif isinstance(port, dict) and 'name' in port:
+            port_name = port['name']
+        
+        if self.debug_mode:
+            debug_info.append(f"Looking for value of port: {port_name}")
+            debug_info.append(f"Node: {self._get_node_name(node)}")
         
         # Get the value using multiple approaches
         
-        # 1. Direct from output_cache - most common approach
+        # 1. Direct from output_cache - most common approach for OllamaFlow
         if hasattr(node, 'output_cache') and isinstance(node.output_cache, dict):
+            if self.debug_mode:
+                debug_info.append(f"Checking output_cache, keys: {list(node.output_cache.keys())}")
+                
             value = node.output_cache.get(port_name)
             if value is not None:
+                if self.debug_mode:
+                    debug_info.append(f"Found value in output_cache: {type(value)}")
                 return value
         
         # 2. From node.execute result
         if hasattr(node, 'execute') and callable(node.execute):
             try:
+                if self.debug_mode:
+                    debug_info.append("Trying node.execute()")
+                    
                 result = node.execute()
                 if isinstance(result, dict) and port_name in result:
+                    if self.debug_mode:
+                        debug_info.append(f"Found value in execute result: {type(result[port_name])}")
                     return result[port_name]
-            except:
-                pass
+            except Exception as e:
+                if self.debug_mode:
+                    debug_info.append(f"execute() error: {str(e)}")
         
-        # 3. From a specific output getter if available
+        # 3. Check for a value in a property with the same name as the port
+        if hasattr(node, 'get_property') and callable(node.get_property):
+            # Try to find a property matching the port name or variations
+            property_candidates = [
+                port_name,
+                port_name.lower(),
+                'text' if port_name.lower() == 'text' else None,
+                'value' if port_name.lower() in ['result', 'output', 'return'] else None
+            ]
+            
+            # Filter out None values
+            property_candidates = [p for p in property_candidates if p is not None]
+            
+            if self.debug_mode:
+                debug_info.append(f"Checking properties: {property_candidates}")
+                
+            for prop_name in property_candidates:
+                try:
+                    value = node.get_property(prop_name)
+                    if value is not None:
+                        if self.debug_mode:
+                            debug_info.append(f"Found value in property {prop_name}: {type(value)}")
+                        return value
+                except Exception as e:
+                    if self.debug_mode:
+                        debug_info.append(f"get_property({prop_name}) error: {str(e)}")
+        
+        # 4. From a specific output getter if available
         if hasattr(node, 'get_output') and callable(node.get_output):
             try:
-                return node.get_output(port_name)
-            except:
-                pass
+                if self.debug_mode:
+                    debug_info.append("Trying node.get_output()")
+                    
+                value = node.get_output(port_name)
+                if value is not None:
+                    if self.debug_mode:
+                        debug_info.append(f"Found value in get_output: {type(value)}")
+                    return value
+            except Exception as e:
+                if self.debug_mode:
+                    debug_info.append(f"get_output() error: {str(e)}")
         
-        # 4. From the node's properties - for OllamaBaseNode
-        if hasattr(node, 'get_property') and callable(node.get_property):
-            # Common naming patterns for properties that become outputs
-            property_names = [port_name, port_name.lower(), 'text', 'output', 'result', 'value']
-            for prop in property_names:
-                try:
-                    value = node.get_property(prop)
-                    if value is not None:
-                        return value
-                except:
-                    continue
+        # 5. For OllamaBaseNode, check if this port maps to a property value
+        if hasattr(node, '_property_inputs') and isinstance(node._property_inputs, dict):
+            # This maps input port names to property names
+            # But for outputs, the property name often directly matches the output name
+            try:
+                # Try common property names that might match this output
+                common_props = ['text', 'result', 'output', 'value', port_name]
+                
+                if self.debug_mode:
+                    debug_info.append(f"Checking OllamaBaseNode properties: {common_props}")
+                    
+                for prop in common_props:
+                    if hasattr(node, 'get_property_value') and callable(node.get_property_value):
+                        value = node.get_property_value(prop)
+                        if value is not None:
+                            if self.debug_mode:
+                                debug_info.append(f"Found value in property {prop}: {type(value)}")
+                            return value
+            except Exception as e:
+                if self.debug_mode:
+                    debug_info.append(f"property lookup error: {str(e)}")
         
+        # Final debug info
+        if self.debug_mode:
+            debug_info.append("No value found")
+            print("\n".join(debug_info))
+            
         return None
     
     def _format_value(self, value):

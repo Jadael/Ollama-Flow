@@ -21,7 +21,8 @@ class PromptNode(OllamaBaseNode):
     
     # Define class-level signals for UI updates
     class PromptSignals(QObject):
-        update_preview = Signal(object, str)
+        update_filtered_preview = Signal(object, str)
+        update_raw_preview = Signal(object, str)
         update_status = Signal(object, str)
     
     def __init__(self):
@@ -35,7 +36,8 @@ class PromptNode(OllamaBaseNode):
         
         # Initialize signals
         self.signals = PromptNode.PromptSignals()
-        self.signals.update_preview.connect(self._update_preview, Qt.QueuedConnection)
+        self.signals.update_filtered_preview.connect(self._update_filtered_preview, Qt.QueuedConnection)
+        self.signals.update_raw_preview.connect(self._update_raw_preview, Qt.QueuedConnection)
         self.signals.update_status.connect(self._update_status, Qt.QueuedConnection)
         
         # Create basic text properties
@@ -52,13 +54,13 @@ class PromptNode(OllamaBaseNode):
         # Add response filtering options
         self.add_combo_menu('filter_mode', 'Filter Mode', 
                           ['None', 'Remove Pattern', 'Extract Pattern'], 
-                          'None', tab='Filtering')
+                          'Remove Pattern', tab='Filtering')
         self.add_text_input('filter_pattern', 'Filter Pattern', '<think>.*?</think>', tab='Filtering')
         
         # Use text input for boolean flags instead of checkboxes due to NodeGraphQt compatibility
         self.add_text_input('use_regex_flags', 'Use Regex Flags (true/false)', 'true', tab='Filtering')
         self.add_text_input('dotall_flag', 'Dot Matches Newline (true/false)', 'true', tab='Filtering')
-        self.add_text_input('multiline_flag', 'Use Multiline Mode (true/false)', 'false', tab='Filtering')
+        self.add_text_input('multiline_flag', 'Use Multiline Mode (true/false)', 'true', tab='Filtering')
         self.add_text_input('ignorecase_flag', 'Ignore Case (true/false)', 'false', tab='Filtering')
         
         # Create raw output port (unfiltered)
@@ -86,13 +88,22 @@ class PromptNode(OllamaBaseNode):
         self.set_color(217, 86, 59)
     
     @Slot(object, str)
-    def _update_preview(self, node, text):
-        """Update the response preview in the main thread"""
+    def _update_filtered_preview(self, node, text):
+        """Update the filtered response preview in the main thread"""
         if node != self:
             return
         # Use direct property setting here as we're in the main thread
         if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
             self.set_property('response_preview', text)
+    
+    @Slot(object, str)
+    def _update_raw_preview(self, node, text):
+        """Update the raw response preview in the main thread"""
+        if node != self:
+            return
+        # Use direct property setting here as we're in the main thread
+        if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
+            self.set_property('raw_response_preview', text)
     
     @Slot(object, str)
     def _update_status(self, node, status):
@@ -124,6 +135,10 @@ class PromptNode(OllamaBaseNode):
         self.start_time = time.time()
         self.set_status("Generating...")
         
+        # Clear previous preview content
+        self.signals.update_filtered_preview.emit(self, "")
+        self.signals.update_raw_preview.emit(self, "")
+        
         # Start generation in a separate thread
         Thread(target=self._generation_thread, 
                args=(system_prompt, user_prompt), 
@@ -137,8 +152,22 @@ class PromptNode(OllamaBaseNode):
         try:
             self.generate_response(system_prompt, user_prompt)
             
-            # Apply filtering to the response
+            # Log the raw response size for debugging
+            print(f"Raw response generated - {len(self.response)} characters")
+            
+            # Apply filtering to the response only after generation is complete
+            print(f"Preparing to filter response with mode: {self.get_property_value('filter_mode')}")
             filtered_response = self.apply_response_filtering(self.response)
+            
+            print(f"Filtering complete - Raw: {len(self.response)} chars, Filtered: {len(filtered_response)} chars")
+            
+            # Verify filtering actually did something
+            if filtered_response == self.response and self.get_property_value('filter_mode') != 'None':
+                print("WARNING: Filtered response is identical to raw response despite filtering being enabled")
+                if self.get_property_value('filter_mode') == 'Remove Pattern':
+                    print(f"Check if pattern '{self.get_property_value('filter_pattern')}' exists in the response")
+                elif self.get_property_value('filter_mode') == 'Extract Pattern':
+                    print(f"Check if pattern '{self.get_property_value('filter_pattern')}' matches anything in the response")
             
             # Once complete, update output_cache with both raw and filtered responses
             self.output_cache = {
@@ -155,13 +184,12 @@ class PromptNode(OllamaBaseNode):
             self.processing = False
             self.processing_done = True
             
-            # Update UI using signal for filtered response
-            preview_text = filtered_response[:10000] + ('...' if len(filtered_response) > 10000 else '')
-            self.signals.update_preview.emit(self, preview_text)
-            
-            # Update raw response preview directly (thread-safe)
+            # Update both raw and filtered previews with the final content
             raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-            self.thread_safe_set_property('raw_response_preview', raw_preview)
+            self.signals.update_raw_preview.emit(self, raw_preview)
+            
+            filtered_preview = filtered_response[:10000] + ('...' if len(filtered_response) > 10000 else '')
+            self.signals.update_filtered_preview.emit(self, filtered_preview)
             
             print(f"Generation thread completed with {self.token_count} tokens")
             
@@ -179,45 +207,85 @@ class PromptNode(OllamaBaseNode):
         """Apply regex filtering to the response based on filter settings"""
         filter_mode = self.get_property_value('filter_mode')
         
-        # If no filtering is selected, return the original text
-        if filter_mode == 'None':
+        print(f"Applying filter mode: '{filter_mode}'")
+        
+        # If no filtering is selected or filter mode is not recognized, return the original text
+        if not filter_mode or filter_mode == 'None':
+            print("No filtering applied - returning original text")
             return text
             
         try:
             # Get pattern
             pattern = self.get_property_value('filter_pattern')
+            if not pattern:
+                print("No filter pattern provided - returning original text")
+                return text
+                
+            print(f"Using filter pattern: '{pattern}'")
             
             # Compile regex with flags if enabled
             flags = 0
-            if self.get_property_value('use_regex_flags').lower() == 'true':
+            use_flags = self.get_property_value('use_regex_flags').lower() == 'true'
+            
+            if use_flags:
                 if self.get_property_value('dotall_flag').lower() == 'true':
                     flags |= re.DOTALL
+                    print("Using DOTALL flag")
+                    
                 if self.get_property_value('multiline_flag').lower() == 'true':
                     flags |= re.MULTILINE
+                    print("Using MULTILINE flag")
+                    
                 if self.get_property_value('ignorecase_flag').lower() == 'true':
                     flags |= re.IGNORECASE
+                    print("Using IGNORECASE flag")
+            
+            # Compile the regex with the flags
+            try:
+                compiled_pattern = re.compile(pattern, flags)
+                print(f"Pattern compiled successfully with flags: {flags}")
+            except re.error as e:
+                print(f"Error compiling regex pattern: {e}")
+                return text
             
             # Apply filtering based on mode
             if filter_mode == 'Remove Pattern':
-                return re.sub(pattern, '', text, flags=flags)
+                print("Applying 'Remove Pattern' filtering")
+                result = compiled_pattern.sub('', text)
+                print(f"Filtering removed {len(text) - len(result)} characters")
+                return result
+                
             elif filter_mode == 'Extract Pattern':
-                matches = re.findall(pattern, text, flags=flags)
-                if matches:
-                    # Handle tuple results from capturing groups
-                    result = []
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            # Use the first capturing group if there are multiple
-                            result.append(match[0] if match else "")
-                        else:
-                            result.append(match)
-                    return "\n".join(result)
-                return ""
+                print("Applying 'Extract Pattern' filtering")
+                matches = compiled_pattern.findall(text)
+                
+                if not matches:
+                    print("No matches found with pattern")
+                    return ""
+                    
+                print(f"Found {len(matches)} matches")
+                
+                # Handle tuple results from capturing groups
+                result = []
+                for match in matches:
+                    if isinstance(match, tuple):
+                        # Use the first capturing group if there are multiple
+                        result.append(match[0] if match else "")
+                    else:
+                        result.append(match)
+                        
+                joined_result = "\n".join(result)
+                print(f"Extracted {len(joined_result)} characters")
+                return joined_result
+                
             else:
+                print(f"Unrecognized filter mode: '{filter_mode}' - returning original text")
                 return text
                 
         except Exception as e:
+            import traceback
             print(f"Error in response filtering: {e}")
+            traceback.print_exc()
             return text  # Return original text on error
     
     def generate_response(self, system_prompt, user_prompt):
@@ -281,11 +349,10 @@ class PromptNode(OllamaBaseNode):
                                 status_text = f"Generating: {self.token_count} tokens ({tps:.1f}/s)"
                                 self.signals.update_status.emit(self, status_text)
                                 
-                                # Apply filtering and update preview occasionally
+                                # Only update the raw preview during streaming
                                 if self.token_count % 10 == 0:
-                                    filtered = self.apply_response_filtering(self.response)
-                                    preview = filtered[:10000] + ('...' if len(filtered) > 10000 else '')
-                                    self.signals.update_preview.emit(self, preview)
+                                    raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
+                                    self.signals.update_raw_preview.emit(self, raw_preview)
                         
                         # Check for completion
                         if data.get('done', False):
@@ -294,12 +361,10 @@ class PromptNode(OllamaBaseNode):
                             status_text = f"Complete: {self.token_count} tokens ({tps:.1f}/s)"
                             self.signals.update_status.emit(self, status_text)
                             
-                            # Apply final filtering
-                            filtered = self.apply_response_filtering(self.response)
+                            # Final update for raw preview
+                            raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
+                            self.signals.update_raw_preview.emit(self, raw_preview)
                             
-                            # Update final preview
-                            preview = filtered[:10000] + ('...' if len(filtered) > 10000 else '')
-                            self.signals.update_preview.emit(self, preview)
                             print(f"Generation complete: {self.token_count} tokens in {elapsed:.2f}s ({tps:.1f}/s)")
                     
                     except json.JSONDecodeError:

@@ -9,7 +9,7 @@
     "reject_connection_types": {}
   },
   "nodes": {
-    "0x1f47b59b710": {
+    "0x1e4dd9a1af0": {
       "type_": "com.ollamaflow.nodes.StaticTextNode",
       "icon": null,
       "name": "Static Text",
@@ -35,20 +35,112 @@
       "selected": false,
       "visible": true,
       "width": 238.0,
-      "height": 116.2,
+      "height": 162.4,
       "pos": [
-        4.685305736218567,
-        231.45410336919764
+        963.7910014601428,
+        -57.057205883333324
       ],
       "layout_direction": 0,
       "port_deletion_allowed": false,
       "subgraph_session": {},
       "custom": {
-        "text": "Tell me a joke!",
+        "recalculation_mode": "Dirty if inputs change",
+        "text": "Crtique these jokes and decide which one is better:",
         "status_info": "Complete"
       }
     },
-    "0x1f47b62c080": {
+    "0x1e4dd9a2990": {
+      "type_": "com.ollamaflow.nodes.StaticTextNode",
+      "icon": null,
+      "name": "Static Text 1",
+      "color": [
+        59,
+        156,
+        217,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": false,
+      "visible": true,
+      "width": 247.0,
+      "height": 162.4,
+      "pos": [
+        385.0695405257226,
+        615.2967245507649
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "recalculation_mode": "Dirty if inputs change",
+        "text": "Tell me a joke",
+        "status_info": "Complete"
+      }
+    },
+    "0x1e4dd9a3860": {
+      "type_": "com.ollamaflow.nodes.JoinNode",
+      "icon": null,
+      "name": "Join",
+      "color": [
+        59,
+        217,
+        147,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": false,
+      "visible": true,
+      "width": 367.0,
+      "height": 624.4,
+      "pos": [
+        1280.3308066136378,
+        153.14858797662208
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "recalculation_mode": "Dirty if inputs change",
+        "input_1": "",
+        "input_2": "",
+        "input_3": "",
+        "input_4": "",
+        "input_5": "",
+        "input_6": "",
+        "input_7": "",
+        "input_8": "",
+        "delimiter": "\n",
+        "skip_empty": "true",
+        "trim_whitespace": "false",
+        "result_preview": "Crtique these jokes and decide which one is better:\n\n\nWhy did the cat sit on the keyboard? Because it was watching the mouse!\n\n\nWhy did the computer go to school? Because it wanted to improve its cache!",
+        "status_info": "Complete"
+      }
+    },
+    "0x1e4dd9d6240": {
       "type_": "com.ollamaflow.nodes.PromptNode",
       "icon": null,
       "name": "LLM Prompt",
@@ -73,17 +165,18 @@
       "disabled": false,
       "selected": false,
       "visible": true,
-      "width": 355.0,
-      "height": 452.20000000000005,
+      "width": 361.0,
+      "height": 796.6,
       "pos": [
-        407.6215990510159,
-        119.00676569995179
+        829.2279388139368,
+        122.81324935719238
       ],
       "layout_direction": 0,
       "port_deletion_allowed": false,
       "subgraph_session": {},
       "custom": {
-        "model": "deepseek-r1:14b",
+        "recalculation_mode": "Dirty if inputs change",
+        "model": "deepseek-r1:32b",
         "system_prompt": "You are a helpful assistant.",
         "user_prompt": "",
         "temperature": "0.7",
@@ -91,19 +184,186 @@
         "top_k": "40",
         "repeat_penalty": "1.1",
         "max_tokens": "2048",
-        "response_preview": "<think>\nAlright, the user asked for a joke. I need to make sure it's appropriate and light-hearted.\n\nI'll go with something simple and funny that most people can relate to.\n\nMaybe something about why eggs don't start fights. That plays on the idea of yolks as the center part.\n\nIt should be quick and easy to understand, so they get a good laugh without any confusion.\n</think>\n\nSure! Why don\u2019t eggs start fights?  \n\nBecause they might end up with a cracked shell! \ud83d\ude04",
-        "status_info": "Complete: 104 tokens"
+        "filter_mode": "Remove Pattern",
+        "filter_pattern": "<think>.*?</think>",
+        "use_regex_flags": "true",
+        "dotall_flag": "true",
+        "multiline_flag": "true",
+        "ignorecase_flag": "false",
+        "response_preview": "\n\nWhy did the cat sit on the keyboard? Because it was watching the mouse!",
+        "raw_response_preview": "<think>\nOkay, so I need to come up with a joke. Hmm, where do I even start? Maybe think about something funny that happened to me or someone I know. Or perhaps use wordplay since those can be pretty effective.\n\nWait, maybe I should consider the audience. Since it's just me and this assistant, I don't have to worry too much about appropriateness, but still, keeping it light-hearted is good. Let me think of some common subjects for jokes\u2014maybe animals, food, or everyday situations.\n\nOh! How about a pun? Those are usually pretty straightforward. Maybe something with a play on words related to a common phrase. For example, using \"light\" in two different ways could be funny. Or maybe something with a question and answer format since those can be quick and easy.\n\nWait, another idea: the assistant told me a joke about why the computer went to school\u2014because it wanted to improve its cache. That was clever! So maybe I should come up with something similar using technology terms or everyday items in a funny way.\n\nAlright, let's think of an object and give it human traits or reasons for doing something. For example, why did the banana go to the doctor? Because it wasn't peeling well! Oh, that's a classic one. But maybe I can think of another one with a different twist.\n\nHow about something with food? Maybe the orange went to a party because it was juicy and everyone wanted a slice? No, that doesn't quite hit the mark. Or perhaps why did the cookie go to school\u2014it needed to improve its crumb structure! Hmm, not as funny as I hoped.\n\nWait, maybe using an animal. Why did the cat sit on the keyboard? Because it saw a mouse nearby! That's better. It uses wordplay with \"mouse\" meaning both the computer component and the actual animal.\n\nAlternatively, why did the golfer bring two sets of pants? In case he got a hole in one! Oh, that's a classic pun. It plays on the phrase \"hole in one\" and the idea of having an extra pair just in case.\n\nBut I think the cat and keyboard joke is funnier because it combines technology with a common pet scenario. Plus, cats are known for being curious and sometimes mischievous, so it makes sense they'd be near a mouse, whether on the computer or in real life.\n\nWait, another angle: maybe something with weather. Why did the cloud go to school? Because it wanted to improve its condensation skills! That's a bit more complex but still uses wordplay effectively.\n\nHmm, I'm not sure if that's as strong as the cat and keyboard joke. Maybe stick with the simpler puns since they're easier to understand and more universally funny.\n\nAlright, so finalizing on why the cat sat on the keyboard\u2014it was watching the mouse! That's concise, uses a play on words, and is relatable for anyone who's used a computer or has a pet cat.\n</think>\n\nWhy did the cat sit on the keyboard? Because it was watching the mouse!",
+        "status_info": "Complete: 631 tokens"
+      }
+    },
+    "0x1e4dd9a2f60": {
+      "type_": "com.ollamaflow.nodes.PromptNode",
+      "icon": null,
+      "name": "LLM Prompt 1",
+      "color": [
+        217,
+        86,
+        59,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": false,
+      "visible": true,
+      "width": 361.0,
+      "height": 796.6,
+      "pos": [
+        838.4319780216118,
+        975.8798432710564
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "recalculation_mode": "Dirty if inputs change",
+        "model": "deepseek-r1:32b",
+        "system_prompt": "You are a helpful assistant.",
+        "user_prompt": "",
+        "temperature": "0.7",
+        "top_p": "0.9",
+        "top_k": "40",
+        "repeat_penalty": "1.1",
+        "max_tokens": "2048",
+        "filter_mode": "Remove Pattern",
+        "filter_pattern": "<think>.*?</think>",
+        "use_regex_flags": "true",
+        "dotall_flag": "true",
+        "multiline_flag": "true",
+        "ignorecase_flag": "false",
+        "response_preview": "\n\nWhy did the computer go to school? Because it wanted to improve its cache!",
+        "raw_response_preview": "<think>\nOkay, so I need to come up with a joke. Hmm, where do I even start? Jokes can be tricky because they have to make sense and also be funny without being offensive or too complicated. Let me think about different categories of jokes\u2014maybe puns, wordplay, or something related to everyday situations.\n\nPuns are always a safe bet because they play on words that sound similar but mean different things. Maybe I can use animals in the joke since people often find those amusing. Let's see... Why did the chicken cross the road? That's a classic, but maybe I can twist it a bit or make it more unique.\n\nWait, another angle could be using professions or hobbies as the subject of the joke. For example, why did the baker do something? Or the teacher? Maybe that could lead to a funny punchline. Alternatively, think about technology-related jokes since that's pretty common nowadays.\n\nOh, what about food-related puns? People love food, and combining it with wordplay can be funny. Like, why did the banana go to the doctor? Because it wasn't peeling well! That kind of joke is simple and effective.\n\nI should also consider the structure of a good joke: setup and punchline. The setup introduces the scenario or question, and the punchline delivers the surprise or twist. It needs to be concise so that it's easy to remember and deliver.\n\nLet me try putting this together. Maybe something like, \"Why did the computer go to school? Because it wanted to improve its cache!\" Hmm, does that work? Cache is a term in computing related to memory storage, so it makes sense as a pun.\n\nAlternatively, maybe using animals again but with a different angle. Like, \"Why don't skeletons fight each other? They don't have the guts!\" That plays on 'guts' meaning both courage and internal organs.\n\nWait, another idea: \"Why did the math book look sad? Because it had too many problems.\" That's simple and relies on the double meaning of 'problems,' which can be both mathematical and personal issues.\n\nI think I'll go with the banana joke because it's straightforward and widely understood. Let me see if there are any variations or improvements I can make to it. Maybe adding a twist or making the punchline more unexpected.\n\nAlternatively, maybe using a play on words with a common phrase. For example, \"Why don\u2019t scientists trust atoms? Because they make up everything!\" That uses 'make up' both literally (as in forming matter) and figuratively (lying).\n\nI think I have enough ideas now. The key is to keep it light-hearted and ensure the punchline makes sense so that people can easily get the joke without overcomplicating things.\n</think>\n\nWhy did the computer go to school? Because it wanted to improve its cache!",
+        "status_info": "Complete: 580 tokens"
+      }
+    },
+    "0x1e4dd9ed130": {
+      "type_": "com.ollamaflow.nodes.PromptNode",
+      "icon": null,
+      "name": "LLM Prompt 2",
+      "color": [
+        217,
+        86,
+        59,
+        255
+      ],
+      "border_color": [
+        74,
+        84,
+        85,
+        255
+      ],
+      "text_color": [
+        255,
+        255,
+        255,
+        180
+      ],
+      "disabled": false,
+      "selected": true,
+      "visible": true,
+      "width": 361.0,
+      "height": 796.6,
+      "pos": [
+        1719.514341838048,
+        181.81866177079135
+      ],
+      "layout_direction": 0,
+      "port_deletion_allowed": false,
+      "subgraph_session": {},
+      "custom": {
+        "recalculation_mode": "Dirty if inputs change",
+        "model": "deepseek-r1:32b",
+        "system_prompt": "You are a helpful assistant.",
+        "user_prompt": "",
+        "temperature": "0.7",
+        "top_p": "0.9",
+        "top_k": "40",
+        "repeat_penalty": "1.1",
+        "max_tokens": "2048",
+        "filter_mode": "Remove Pattern",
+        "filter_pattern": "<think>.*?</think>",
+        "use_regex_flags": "true",
+        "dotall_flag": "true",
+        "multiline_flag": "true",
+        "ignorecase_flag": "false",
+        "response_preview": "\n\nThe first joke, \"Why did the cat sit on the keyboard? Because it was watching the mouse!\" is more effective. It uses a clear pun with \"mouse,\" referencing both the animal and the computer accessory, making it relatable and accessible. The second joke, while clever, relies on technical terminology (\"cache\") which may not resonate as widely. Thus, the first joke is better due to its universal appeal and straightforward wordplay.\n\n**Answer:**\nThe first joke is better because it effectively uses a pun with \"mouse,\" creating an immediately relatable scenario that most people can understand, making it more universally funny compared to the second joke which relies on technical terminology.",
+        "raw_response_preview": "<think>\nOkay, so I need to critique two jokes and figure out which one is better. Let me take a look at them again.\n\nThe first joke is: \"Why did the cat sit on the keyboard? Because it was watching the mouse!\" Hmm, that's playing on words with \"mouse.\" In computing, a mouse is an input device, but in real life, a cat chases mice. So the pun here is using \"mouse\" both as the animal and the computer accessory. That makes sense, and I can see why someone would find it funny because of the double meaning.\n\nThe second joke is: \"Why did the computer go to school? Because it wanted to improve its cache!\" Okay, so this one uses \"cache,\" which in computing refers to a hardware or software component that stores data temporarily to speed up subsequent requests. The wordplay here is on \"cache\" sounding like \"casserole,\" maybe? Or perhaps just the idea of improving something, but I'm not sure if it's as strong as the first joke.\n\nComparing the two, the first one seems more straightforward and relatable. Most people are familiar with cats and mice, so the joke is easier to grasp quickly. The pun is clear and doesn't require too much technical knowledge beyond knowing that computers have mice as input devices.\n\nThe second joke requires a bit more understanding of computer terminology because it uses \"cache.\" While some people might get it, others who aren't familiar with tech terms might not find it funny or might even be confused. The humor isn't as universally accessible as the first joke.\n\nAlso, the structure of the first joke is classic: setup (\"Why did the cat...\") and punchline that twists expectations by using a double meaning. It's a solid formula for jokes because it creates an immediate contrast between what's expected (a real mouse) and the tech reference.\n\nIn terms of creativity, both are good, but the first one uses a more common scenario and plays on a widely recognized word. The second joke is clever too, but it might not land as well with everyone because of its niche terminology.\n\nSo, considering clarity, relatability, and effectiveness in delivering humor through wordplay, I think the first joke about the cat sitting on the keyboard is better than the one about the computer going to school.\n</think>\n\nThe first joke, \"Why did the cat sit on the keyboard? Because it was watching the mouse!\" is more effective. It uses a clear pun with \"mouse,\" referencing both the animal and the computer accessory, making it relatable and accessible. The second joke, while clever, relies on technical terminology (\"cache\") which may not resonate as widely. Thus, the first joke is better due to its universal appeal and straightforward wordplay.\n\n**Answer:**\nThe first joke is better because it effectively uses a pun with \"mouse,\" creating an immediately relatable scenario that most people can understand, making it more universally funny compared to the second joke which relies on technical terminology.",
+        "status_info": "Complete: 609 tokens"
       }
     }
   },
   "connections": [
     {
       "out": [
-        "0x1f47b59b710",
+        "0x1e4dd9a1af0",
         "Text"
       ],
       "in": [
-        "0x1f47b62c080",
+        "0x1e4dd9a3860",
+        "Input 1"
+      ]
+    },
+    {
+      "out": [
+        "0x1e4dd9a2990",
+        "Text"
+      ],
+      "in": [
+        "0x1e4dd9d6240",
+        "User Prompt"
+      ]
+    },
+    {
+      "out": [
+        "0x1e4dd9a2990",
+        "Text"
+      ],
+      "in": [
+        "0x1e4dd9a2f60",
+        "User Prompt"
+      ]
+    },
+    {
+      "in": [
+        "0x1e4dd9a3860",
+        "Input 2"
+      ],
+      "out": [
+        "0x1e4dd9d6240",
+        "Response"
+      ]
+    },
+    {
+      "in": [
+        "0x1e4dd9a3860",
+        "Input 3"
+      ],
+      "out": [
+        "0x1e4dd9a2f60",
+        "Response"
+      ]
+    },
+    {
+      "out": [
+        "0x1e4dd9a3860",
+        "Result"
+      ],
+      "in": [
+        "0x1e4dd9ed130",
         "User Prompt"
       ]
     }
