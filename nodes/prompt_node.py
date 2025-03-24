@@ -17,7 +17,7 @@ class PromptNode(OllamaBaseNode):
     NODE_NAME = 'LLM Prompt'
     
     # Node category for menu organization
-    NODE_CATEGORY = 'LLM'
+    NODE_CATEGORY = 'Basic'
     
     # Define class-level signals for UI updates
     class PromptSignals(QObject):

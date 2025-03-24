@@ -11,7 +11,7 @@ class JoinNode(OllamaBaseNode):
     NODE_NAME = 'Join'
     
     # Node category for menu organization
-    NODE_CATEGORY = 'Text Processing'
+    NODE_CATEGORY = 'Basic'
     
     def __init__(self):
         super(JoinNode, self).__init__()

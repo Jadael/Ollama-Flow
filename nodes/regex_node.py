@@ -12,7 +12,7 @@ class RegexNode(OllamaBaseNode):
     NODE_NAME = 'Regex'
     
     # Node category for menu organization
-    NODE_CATEGORY = 'Text Processing'
+    NODE_CATEGORY = 'Basic'
     
     def __init__(self):
         super(RegexNode, self).__init__()

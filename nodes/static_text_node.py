@@ -12,7 +12,7 @@ class StaticTextNode(OllamaBaseNode):
     NODE_NAME = 'Static Text'
     
     # Node category for menu organization
-    NODE_CATEGORY = 'Input'
+    NODE_CATEGORY = 'Basic'
     
     def __init__(self):
         super(StaticTextNode, self).__init__()

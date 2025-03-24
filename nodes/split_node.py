@@ -12,7 +12,7 @@ class SplitNode(OllamaBaseNode):
     NODE_NAME = 'Split'
     
     # Node category for menu organization
-    NODE_CATEGORY = 'Text Processing'
+    NODE_CATEGORY = 'Basic'
     
     def __init__(self):
         super(SplitNode, self).__init__()
