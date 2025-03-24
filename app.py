@@ -465,22 +465,32 @@ class OllamaFlow(QMainWindow):
             
             print(f"Preparing {len(all_nodes)} nodes for saving...")
             
-            # Update processing state and ensure serialization works
+            # Update processing state before saving
             for node in all_nodes:
                 try:
                     # Ensure all nodes that are done processing are marked as such
                     if hasattr(node, 'processing') and not node.processing:
                         node.processing_done = True
                     
-                    # Make sure non-dirty nodes with output stay non-dirty
-                    if hasattr(node, 'get_property') and hasattr(node, 'output_cache') and node.output_cache:
+                    # For nodes with "Never dirty" mode, make sure they stay marked as not dirty
+                    if hasattr(node, 'get_property') and callable(getattr(node, 'get_property')):
                         try:
                             mode = node.get_property('recalculation_mode')
                             if mode == 'Never dirty':
-                                node.dirty = False
-                                print(f"Node {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}: Ensuring not dirty before save")
-                        except:
-                            pass
+                                # Check if the node has a valid cache
+                                has_valid_cache = False
+                                if hasattr(node, 'has_valid_cache') and callable(getattr(node, 'has_valid_cache')):
+                                    has_valid_cache = node.has_valid_cache()
+                                elif hasattr(node, 'output_cache') and node.output_cache:
+                                    has_valid_cache = True
+                                    
+                                if has_valid_cache:
+                                    # Ensure it's marked as not dirty
+                                    if hasattr(node, 'dirty'):
+                                        node.dirty = False
+                                        print(f"Node {node.name()}: Ensuring not dirty before save (Never dirty mode with cache)")
+                        except Exception as e:
+                            print(f"Error checking recalculation mode: {e}")
                 except Exception as e:
                     print(f"Error preparing node for save: {e}")
             
@@ -494,32 +504,6 @@ class OllamaFlow(QMainWindow):
                 elif hasattr(self.graph, 'serialize_session'):
                     # Alternative method used in some versions
                     session_data = self.graph.serialize_session()
-                    
-                    # Check if our custom data was included
-                    ollamaflow_data_included = False
-                    for node_data in session_data.get('nodes', []):
-                        if any(key.startswith('ollama_') for key in node_data.keys()):
-                            ollamaflow_data_included = True
-                            break
-                    
-                    if not ollamaflow_data_included:
-                        print("Warning: NodeGraphQt serialization did not include OllamaFlow custom data")
-                        # We'll manually add our data to each node
-                        for node_data in session_data.get('nodes', []):
-                            node_id = node_data.get('id')
-                            # Find the corresponding node
-                            for node in all_nodes:
-                                if hasattr(node, 'id') and node.id == node_id:
-                                    # Add our custom data
-                                    if hasattr(node, 'serialize') and callable(node.serialize):
-                                        try:
-                                            custom_data = node.serialize()
-                                            # Add all ollama_ keys
-                                            for key, value in custom_data.items():
-                                                if key.startswith('ollama_'):
-                                                    node_data[key] = value
-                                        except Exception as e:
-                                            print(f"Error adding custom data for node {node_id}: {e}")
                     
                     with open(file_path, 'w') as f:
                         json.dump(session_data, f, indent=2)
@@ -546,23 +530,6 @@ class OllamaFlow(QMainWindow):
             # Use NodeGraphQt's import_session functionality
             try:
                 print(f"Loading workflow from {file_path}...")
-                
-                # First check if file contains our custom data
-                contains_custom_data = False
-                try:
-                    with open(file_path, 'r') as f:
-                        session_data = json.load(f)
-                        
-                    for node_data in session_data.get('nodes', []):
-                        if any(key.startswith('ollama_') for key in node_data.keys()):
-                            contains_custom_data = True
-                            print("File contains OllamaFlow custom data")
-                            break
-                            
-                    if not contains_custom_data:
-                        print("Warning: File does not contain OllamaFlow custom data - caches won't be restored")
-                except:
-                    print("Could not pre-check file for custom data")
                 
                 # Clear the current graph first - use the correct method based on what's available
                 if hasattr(self.graph, 'clear_all') and callable(self.graph.clear_all):
@@ -598,7 +565,7 @@ class OllamaFlow(QMainWindow):
                     self.statusBar.showMessage("Error: Unable to load workflow - method not found")
                     return
                     
-                # After loading, verify "Never dirty" nodes have properly restored caches
+                # After loading, ensure proper state for each node
                 all_nodes = []
                 if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
                     all_nodes = self.graph.all_nodes()
@@ -606,29 +573,36 @@ class OllamaFlow(QMainWindow):
                     all_nodes = self.graph.nodes()
                     
                 for node in all_nodes:
-                    # For each node, check recalculation mode and adjust dirty flag if needed
                     try:
                         node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
                         
-                        # Check if cache was properly restored
-                        has_cache = hasattr(node, 'output_cache') and node.output_cache
-                        
-                        if has_cache:
-                            print(f"Node {node_name}: Output cache restored with {len(node.output_cache)} entries")
-                            
-                            # Check recalculation mode
-                            if hasattr(node, 'get_property') and callable(getattr(node, 'get_property')):
+                        # Check recalculation mode
+                        if hasattr(node, 'get_property') and callable(getattr(node, 'get_property')):
+                            try:
                                 recalc_mode = node.get_property('recalculation_mode')
+                                
+                                # Handle nodes with "Never dirty" mode
                                 if recalc_mode == 'Never dirty':
-                                    node.dirty = False
-                                    node.processing_done = True
-                                    print(f"Node {node_name}: Set to not dirty (Never dirty mode with cache)")
-                                elif not node.dirty:
-                                    print(f"Node {node_name}: Keeping not dirty state with cache")
-                                else:
-                                    print(f"Node {node_name}: Dirty with cache (normal behavior)")
-                        else:
-                            print(f"Node {node_name}: No output cache restored")
+                                    # Check if the node has a valid cache
+                                    has_valid_cache = False
+                                    if hasattr(node, 'has_valid_cache') and callable(getattr(node, 'has_valid_cache')):
+                                        has_valid_cache = node.has_valid_cache()
+                                    elif hasattr(node, 'output_cache') and node.output_cache:
+                                        has_valid_cache = True
+                                        
+                                    if has_valid_cache:
+                                        # Ensure it's marked as not dirty
+                                        if hasattr(node, 'dirty'):
+                                            node.dirty = False
+                                            print(f"Node {node_name}: Set to not dirty after load (Never dirty mode with cache)")
+                                # Handle nodes with "Always dirty" mode
+                                elif recalc_mode == 'Always dirty':
+                                    if hasattr(node, 'dirty'):
+                                        node.dirty = True
+                                        print(f"Node {node_name}: Set to dirty after load (Always dirty mode)")
+                            except Exception as e:
+                                print(f"Error checking recalculation mode for {node_name}: {e}")
+                                
                     except Exception as e:
                         print(f"Error checking node after load: {e}")
                 

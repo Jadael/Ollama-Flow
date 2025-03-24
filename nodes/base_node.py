@@ -199,44 +199,25 @@ class OllamaBaseNode(BaseNode):
     def serialize(self):
         """
         Serialize the node data for saving.
-        Override NodeGraphQt's BaseNode serialize to include our custom data.
+        With our simplified approach using properties, we can remove most of the custom 
+        serialization logic. The properties will be automatically saved by NodeGraphQt.
+        
+        We'll still need to keep track of our processing state flags.
         """
-        # We'll create our own custom data dictionary instead of extending the base one
-        # This avoids potential conflicts with NodeGraphQt's serialization
-        node_dict = {}
-        
-        # Add our custom fields only - don't include base node fields since they're handled by NodeGraphQt
-        if hasattr(self, 'output_cache') and self.output_cache:
-            # We need to make sure the output cache is serializable
-            # First, we'll make a deep copy to avoid modifying the original
-            import copy
-            serializable_cache = copy.deepcopy(self.output_cache)
-            
-            # Clean up any non-serializable objects
-            def make_serializable(obj):
-                if isinstance(obj, (str, int, float, bool, type(None))):
-                    return obj
-                elif isinstance(obj, (list, tuple)):
-                    return [make_serializable(item) for item in obj]
-                elif isinstance(obj, dict):
-                    return {str(k): make_serializable(v) for k, v in obj.items()}
-                else:
-                    # Convert to string for anything else
-                    return str(obj)
-            
-            # Apply the cleanup to the cache
-            serializable_cache = make_serializable(serializable_cache)
-            
-            # Store the cleaned cache
-            node_dict['ollama_output_cache'] = serializable_cache
-            
-            print(f"Node {self.name()}: Serialized output cache with {len(serializable_cache)} entries")
-        
-        # Store processing state flags
-        node_dict['ollama_dirty'] = self.dirty if hasattr(self, 'dirty') else True
-        node_dict['ollama_processing_done'] = self.processing_done if hasattr(self, 'processing_done') else True
+        # Create a dictionary for any custom data we still need to track
+        node_dict = {
+            'ollama_dirty': self.dirty if hasattr(self, 'dirty') else True,
+            'ollama_processing_done': self.processing_done if hasattr(self, 'processing_done') else True
+        }
         
         return node_dict
+
+    def has_valid_cache(self):
+        """
+        Check if the node has a valid output cache.
+        Override in subclasses for node-specific validation.
+        """
+        return hasattr(self, 'output_cache') and bool(self.output_cache)
 
     def deserialize(self, node_dict, namespace=None, context=None):
         """
@@ -255,12 +236,15 @@ class OllamaBaseNode(BaseNode):
         if 'ollama_processing_done' in node_dict:
             self.processing_done = node_dict['ollama_processing_done']
         
-        # If in "Never dirty" mode and we have a cache, ensure it stays not dirty
+        # If in "Never dirty" mode and we have a valid cache, ensure it stays not dirty
         try:
             recalc_mode = self.get_property('recalculation_mode')
-            if recalc_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
+            if recalc_mode == 'Never dirty' and self.has_valid_cache():
                 self.dirty = False
-                print(f"Node {self.name()}: Set to not dirty based on 'Never dirty' mode and restored cache")
+                print(f"Node {self.name()}: Set to not dirty based on 'Never dirty' mode and valid cache")
+            elif recalc_mode == 'Always dirty':
+                self.dirty = True
+                print(f"Node {self.name()}: Set to dirty based on 'Always dirty' mode")
         except Exception as e:
             print(f"Node {self.name()}: Error checking recalculation mode during deserialization: {e}")
 

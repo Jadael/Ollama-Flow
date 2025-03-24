@@ -77,6 +77,12 @@ class PromptNode(OllamaBaseNode):
         self.add_text_input('raw_response_preview', 'Raw Response', '', tab='Response')
         self.add_text_input('status_info', 'Status', 'Ready')
         
+        # Add properties to store the full output values (not just previews)
+        self.exclude_property_from_input('full_raw_response')
+        self.exclude_property_from_input('full_filtered_response')
+        self.add_text_input('full_raw_response', 'Full Raw Response', '')
+        self.add_text_input('full_filtered_response', 'Full Filtered Response', '')
+        
         # Additional prompt node state
         self.stop_requested = False
         self.current_response = None
@@ -168,6 +174,10 @@ class PromptNode(OllamaBaseNode):
                     print(f"Check if pattern '{self.get_property_value('filter_pattern')}' exists in the response")
                 elif self.get_property_value('filter_mode') == 'Extract Pattern':
                     print(f"Check if pattern '{self.get_property_value('filter_pattern')}' matches anything in the response")
+            
+            # Store the full output values in properties for serialization
+            self.thread_safe_set_property('full_raw_response', self.response)
+            self.thread_safe_set_property('full_filtered_response', filtered_response)
             
             # Prepare result dictionary
             result_dict = {
@@ -377,3 +387,53 @@ class PromptNode(OllamaBaseNode):
         
         finally:
             self.current_response = None
+    
+    def deserialize(self, node_dict, namespace=None, context=None):
+        """Called when the node is being deserialized from a saved workflow"""
+        # Call the base class deserialize first
+        super(PromptNode, self).deserialize(node_dict, namespace, context)
+        
+        # Get the saved output values from properties
+        raw_response = self.get_property('full_raw_response')
+        filtered_response = self.get_property('full_filtered_response')
+        
+        print(f"PromptNode {self.name()}: Checking saved outputs: raw={bool(raw_response)}, filtered={bool(filtered_response)}")
+        
+        # If we have output values, restore them to the output cache
+        if raw_response or filtered_response:
+            if not hasattr(self, 'output_cache'):
+                self.output_cache = {}
+                
+            self.output_cache['Raw Response'] = raw_response
+            self.output_cache['Response'] = filtered_response
+            
+            # Set previews
+            raw_preview = raw_response[:10000] + ('...' if len(raw_response) > 10000 else '')
+            self.set_property('raw_response_preview', raw_preview)
+            
+            filtered_preview = filtered_response[:10000] + ('...' if len(filtered_response) > 10000 else '')
+            self.set_property('response_preview', filtered_preview)
+            
+            print(f"PromptNode {self.name()}: Restored outputs from properties")
+            
+            # Set dirty state based on recalculation mode
+            recalc_mode = self.get_property('recalculation_mode')
+            if recalc_mode == 'Never dirty':
+                self.dirty = False
+                print(f"PromptNode {self.name()}: Set to not dirty based on 'Never dirty' mode and restored outputs")
+    
+    def has_valid_cache(self):
+        """Check if the prompt node has a valid output cache"""
+        # Check the output properties first
+        raw_response = self.get_property('full_raw_response')
+        filtered_response = self.get_property('full_filtered_response')
+        
+        if raw_response and filtered_response:
+            return True
+            
+        # Fallback to output_cache check
+        return (hasattr(self, 'output_cache') and 
+                'Raw Response' in self.output_cache and 
+                'Response' in self.output_cache and
+                self.output_cache['Raw Response'] and
+                self.output_cache['Response'])

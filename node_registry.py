@@ -220,7 +220,8 @@ class NodeRegistry:
 
     def _register_serialization_hooks(self, graph):
         """
-        Register serialization hooks to ensure our custom node data is saved/loaded.
+        Register serialization hooks for handling node state during save/load.
+        Simplified with the move to property-based storage.
         
         Args:
             graph: The NodeGraph instance
@@ -237,34 +238,16 @@ class NodeRegistry:
                 print("Warning: Could not access session for serialization hooks")
                 return
             
-            # Register hooks for serializing custom node data
-            print("Registering serialization hooks for custom node data")
+            # Register hook for deserializing nodes 
+            print("Registering deserialization hook for node state")
             
-            # Store original methods to call them from our overrides
-            orig_serialize = getattr(session, 'serialize_node', None)
+            # Store original method to call from our override
             orig_deserialize = getattr(session, 'deserialize_node', None)
             
-            # Only replace if we found the original methods
-            if orig_serialize and orig_deserialize:
-                def serialize_node_override(node):
-                    """Override to include our custom data"""
-                    node_dict = orig_serialize(node)
-                    
-                    # Add our custom data if the node has our methods
-                    if hasattr(node, 'serialize') and callable(node.serialize):
-                        try:
-                            custom_data = node.serialize()
-                            # Merge custom data into node_dict
-                            for key, value in custom_data.items():
-                                if key not in node_dict:
-                                    node_dict[key] = value
-                        except Exception as e:
-                            print(f"Error in custom node serialization: {e}")
-                    
-                    return node_dict
-                
+            # Only replace if we found the original method
+            if orig_deserialize:
                 def deserialize_node_override(node_data, node):
-                    """Override to handle our custom data"""
+                    """Override to handle our node state during deserialization"""
                     # First call original deserialize
                     orig_deserialize(node_data, node)
                     
@@ -275,12 +258,11 @@ class NodeRegistry:
                         except Exception as e:
                             print(f"Error in custom node deserialization: {e}")
                 
-                # Replace the methods with our overrides
-                setattr(session, 'serialize_node', serialize_node_override)
+                # Replace the deserialize method with our override
                 setattr(session, 'deserialize_node', deserialize_node_override)
-                print("Successfully registered serialization hooks")
+                print("Successfully registered deserialization hook")
             else:
-                print("Warning: Could not find serialization methods to override")
+                print("Warning: Could not find deserialization method to override")
                 
         except Exception as e:
             print(f"Error registering serialization hooks: {e}")

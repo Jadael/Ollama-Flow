@@ -133,7 +133,7 @@ class WorkflowExecutor:
             
             # Find nodes that should be processed
             nodes_to_process = set()
-            
+
             for node in all_nodes:
                 node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
                 
@@ -155,13 +155,26 @@ class WorkflowExecutor:
                     # Mark as dirty to ensure processing
                     if hasattr(node, 'dirty'):
                         node.dirty = True
-                elif recalc_mode == 'Never dirty' and hasattr(node, 'output_cache') and node.output_cache:
-                    # Skip processing for Never dirty with cached output
-                    print(f"Node {node_name}: Skipping (Never dirty mode with cache)")
-                    should_process = False
-                    # Ensure it's marked not dirty
-                    if hasattr(node, 'dirty'):
-                        node.dirty = False
+                elif recalc_mode == 'Never dirty':
+                    # Check if the node has a valid cache
+                    has_valid_cache = False
+                    
+                    if hasattr(node, 'has_valid_cache') and callable(getattr(node, 'has_valid_cache')):
+                        has_valid_cache = node.has_valid_cache()
+                    elif hasattr(node, 'output_cache') and node.output_cache:
+                        has_valid_cache = True
+                    
+                    if has_valid_cache:
+                        # Skip processing for Never dirty with valid cached output
+                        print(f"Node {node_name}: Skipping (Never dirty mode with valid cache)")
+                        should_process = False
+                        # Ensure it's marked not dirty
+                        if hasattr(node, 'dirty'):
+                            node.dirty = False
+                    else:
+                        # Process even in Never dirty mode if cache is invalid
+                        print(f"Node {node_name}: Adding to processing queue (Never dirty but invalid cache)")
+                        should_process = True
                 elif hasattr(node, 'dirty') and node.dirty:
                     print(f"Node {node_name}: Adding to processing queue (dirty)")
                     should_process = True
