@@ -89,81 +89,163 @@ class WorkflowExecutor:
             elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
                 all_nodes = self.graph.nodes()
             
-            # Find all dirty nodes that need processing
-            dirty_nodes = []
+            # Build dependency graph first
+            # This is a map of node -> list of nodes it depends on
+            dependencies = {}
+            dependents = {}  # Reverse map: nodes that depend on this node
+            
             for node in all_nodes:
-                if hasattr(node, 'dirty') and node.dirty and hasattr(node, 'compute'):
-                    dirty_nodes.append(node)
+                # Initialize dependency lists
+                dependencies[node] = []
+                if node not in dependents:
+                    dependents[node] = []
+                
+                # Get input ports
+                input_ports = []
+                if hasattr(node, 'input_ports') and callable(getattr(node, 'input_ports')):
+                    input_ports = node.input_ports()
+                elif hasattr(node, 'inputs'):
+                    input_ports = node.inputs
+                    
+                # For each input port, find connected nodes
+                for input_port in input_ports:
+                    connected_ports = []
+                    if hasattr(input_port, 'connected_ports') and callable(getattr(input_port, 'connected_ports')):
+                        connected_ports = input_port.connected_ports()
+                    elif hasattr(input_port, 'connections'):
+                        connected_ports = input_port.connections
+                    
+                    # Add each connected node as a dependency
+                    for connected_port in connected_ports:
+                        if hasattr(connected_port, 'node') and callable(getattr(connected_port, 'node')):
+                            connected_node = connected_port.node()
+                            if connected_node in all_nodes:
+                                dependencies[node].append(connected_node)
+                                if connected_node not in dependents:
+                                    dependents[connected_node] = []
+                                dependents[connected_node].append(node)
             
-            print(f"Found {len(dirty_nodes)} dirty nodes to process")
+            print("Built dependency graph:")
+            for node in dependencies:
+                node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                dep_names = [dep.name() if hasattr(dep, 'name') and callable(getattr(dep, 'name')) else "Unknown" for dep in dependencies[node]]
+                print(f"  Node {node_name} depends on: {', '.join(dep_names) if dep_names else 'None'}")
             
-            # Process dirty nodes if we have any
-            if dirty_nodes:
-                for node in dirty_nodes:
+            # Find nodes that should be processed
+            nodes_to_process = set()
+            
+            for node in all_nodes:
+                node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                
+                # Check recalculation mode
+                recalc_mode = "Dirty if inputs change"  # Default mode
+                if hasattr(node, 'get_property') and callable(getattr(node, 'get_property')):
                     try:
-                        node_name = "Unknown"
-                        if hasattr(node, 'name') and callable(getattr(node, 'name')):
-                            node_name = node.name()
-                        print(f"Processing node: {node_name}")
-                        node.compute()
-                        node_processed = True
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        # Get node name safely
-                        node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
-                        result = (False, f"Error executing node {node_name}: {str(e)}")
-                        break
-            # If no dirty nodes found, fall back to processing terminal nodes
-            # This maintains backward compatibility with the original approach
-            elif terminal_nodes := self._get_terminal_nodes():
-                print(f"No dirty nodes found, processing {len(terminal_nodes)} terminal nodes")
-                for node in terminal_nodes:
-                    try:
-                        node_name = "Unknown"
-                        if hasattr(node, 'name') and callable(getattr(node, 'name')):
-                            node_name = node.name()
-                        print(f"Processing terminal node: {node_name}")
-                        if hasattr(node, 'compute'):
-                            node.compute()
-                            node_processed = True
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        # Get node name safely
-                        node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
-                        result = (False, f"Error executing node {node_name}: {str(e)}")
-                        break
-            # If still no nodes to process, try all nodes with outputs
-            else:
-                print("No dirty or terminal nodes found, trying all nodes with outputs")
-                for node in all_nodes:
-                    # Check if the node has outputs
-                    has_outputs = False
-                    if callable(getattr(node, 'output_ports', None)):
-                        has_outputs = bool(node.output_ports())
-                    elif hasattr(node, 'outputs'):
-                        has_outputs = bool(node.outputs)
-                        
-                    if has_outputs:
-                        try:
-                            node_name = "Unknown"
-                            if hasattr(node, 'name') and callable(getattr(node, 'name')):
-                                node_name = node.name()
-                            print(f"Processing node with outputs: {node_name}")
-                            if hasattr(node, 'compute'):
-                                node.compute()
-                                node_processed = True
-                        except Exception as e:
-                            import traceback
-                            traceback.print_exc()
-                            # Get node name safely
-                            node_name = node.name() if callable(getattr(node, 'name', None)) else str(node)
-                            result = (False, f"Error executing node {node_name}: {str(e)}")
-                            break
+                        recalc_mode = node.get_property('recalculation_mode')
+                    except:
+                        pass
+                
+                # Determine if node should be processed
+                should_process = False
+                
+                if recalc_mode == 'Always dirty':
+                    # Always process these nodes
+                    print(f"Node {node_name}: Adding to processing queue (Always dirty mode)")
+                    should_process = True
+                    # Mark as dirty to ensure processing
+                    if hasattr(node, 'dirty'):
+                        node.dirty = True
+                elif recalc_mode == 'Never dirty' and hasattr(node, 'output_cache') and node.output_cache:
+                    # Skip processing for Never dirty with cached output
+                    print(f"Node {node_name}: Skipping (Never dirty mode with cache)")
+                    should_process = False
+                    # Ensure it's marked not dirty
+                    if hasattr(node, 'dirty'):
+                        node.dirty = False
+                elif hasattr(node, 'dirty') and node.dirty:
+                    print(f"Node {node_name}: Adding to processing queue (dirty)")
+                    should_process = True
+                
+                if should_process and hasattr(node, 'compute') and callable(getattr(node, 'compute')):
+                    nodes_to_process.add(node)
             
-            # Wait a bit for async nodes to begin processing
-            time.sleep(0.5)
+            # No nodes to process? We're done
+            if not nodes_to_process:
+                print("No nodes need processing - workflow is up to date")
+                return (True, "Workflow is up to date")
+            
+            print(f"Found {len(nodes_to_process)} nodes to process")
+            
+            # Create processing queue with proper dependency order
+            processing_queue = []
+            visited = set()
+            temp_visited = set()  # For cycle detection
+            
+            def visit(node):
+                """DFS traversal to build topological sort"""
+                if node in temp_visited:
+                    # Cycle detected - graph is not acyclic
+                    print(f"Warning: Cycle detected involving node {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}")
+                    return
+                
+                if node in visited:
+                    return
+                    
+                temp_visited.add(node)
+                
+                # Visit dependencies first
+                for dep in dependencies[node]:
+                    if dep in nodes_to_process:  # Only visit nodes that need processing
+                        visit(dep)
+                
+                # Done with dependencies, add to processing queue
+                temp_visited.remove(node)
+                visited.add(node)
+                processing_queue.append(node)
+            
+            # Start with "root" nodes - those that need processing but have no dependencies in the processing set
+            for node in nodes_to_process:
+                # Check if this node has any dependencies that need processing
+                has_unprocessed_deps = any(dep in nodes_to_process for dep in dependencies[node])
+                if not has_unprocessed_deps:
+                    visit(node)
+            
+            # Process any remaining nodes (in case of cycles)
+            for node in nodes_to_process:
+                if node not in visited:
+                    visit(node)
+            
+            # Reverse the queue for proper processing order (dependencies first)
+            processing_queue.reverse()
+            
+            print("Processing queue order:")
+            for i, node in enumerate(processing_queue):
+                node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                print(f"  {i+1}. {node_name}")
+            
+            # Now process nodes in order
+            processed_count = 0
+            
+            for node in processing_queue:
+                try:
+                    node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                    print(f"Processing node: {node_name}")
+                    
+                    # Call compute - make sure upstream dependencies are handled properly
+                    # Note: compute() typically has its own dependency processing, but our topological sort
+                    # should ensure minimal redundant processing
+                    node.compute()
+                    processed_count += 1
+                    node_processed = True
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                    result = (False, f"Error executing node {node_name}: {str(e)}")
+                    break
+            
+            # Wait for async nodes to complete
+            time.sleep(0.5)  # Brief pause for any async nodes to begin processing
             
             # Check which nodes are still processing
             processing_nodes = self._get_processing_nodes()
@@ -171,10 +253,8 @@ class WorkflowExecutor:
             if processing_nodes:
                 node_names = []
                 for n in processing_nodes:
-                    if hasattr(n, 'name') and callable(getattr(n, 'name')):
-                        node_names.append(n.name())
-                    else:
-                        node_names.append('Unknown')
+                    node_name = n.name() if hasattr(n, 'name') and callable(getattr(n, 'name')) else "Unknown"
+                    node_names.append(node_name)
                 print(f"Waiting for {len(processing_nodes)} nodes that are still processing: {', '.join(node_names)}")
                 result = (True, f"Workflow started ({len(processing_nodes)} nodes processing)")
                 node_processed = True
@@ -195,11 +275,10 @@ class WorkflowExecutor:
                     result = (True, f"Workflow partially complete, {len(processing_nodes)} nodes still running")
                 else:
                     print(f"Workflow execution completed successfully")
-                    result = (True, f"Workflow executed successfully ({len(dirty_nodes)} nodes processed)")
-            else:
-                print("No nodes needed processing")
-                result = (False, "No nodes needed processing")
-                
+                    result = (True, f"Workflow executed successfully ({processed_count} nodes processed)")
+            elif result[0]:  # If successful but no nodes processed
+                result = (True, "Workflow up to date - no processing needed")
+        
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -216,7 +295,7 @@ class WorkflowExecutor:
                 if signal_handler:
                     print(f"Emitting workflow completion signal")
                     QCoreApplication.postEvent(signal_handler, 
-                                             QCustomEvent(signal_handler._emit_completion, result))
+                                            QCustomEvent(signal_handler._emit_completion, result))
                 else:
                     # Fall back to direct callback - only for extreme cases
                     try:

@@ -161,25 +161,30 @@ class OllamaBaseNode(BaseNode):
             self._excluded_input_props = set()
             
         self._excluded_input_props.add(prop_name)
-    
+        
     def mark_dirty(self):
         """Mark this node as needing reprocessing"""
-        # Check if the node should be marked as dirty based on recalculation mode
-        recalc_mode = self.get_property('recalculation_mode')
-        
-        # Never mark as dirty if the mode is 'Never dirty'
-        if recalc_mode == 'Never dirty':
-            print(f"Node {self.name()}: Not marking dirty (Never dirty mode)")
-            return
-            
-        # Always mark as dirty for other modes
+        # Don't mark as dirty if recalculation mode is "Never dirty" and we have output_cache
+        try:
+            recalc_mode = self.get_property('recalculation_mode')
+            if recalc_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
+                print(f"Node {self.name()}: Not marking as dirty due to 'Never dirty' mode")
+                return
+        except Exception as e:
+            # If we can't get the mode, proceed with normal marking
+            print(f"Node {self.name()}: Error checking recalculation mode: {e}, proceeding with normal marking")
+
+        # Only proceed if not already dirty
         if not self.dirty:
             self.dirty = True
             self.status = "Ready"
-            print(f"Node {self.name()}: Marked as dirty")
             
-            # Mark downstream nodes as dirty if they use 'Dirty if inputs change'
-            self._mark_downstream_dirty()
+            # Mark downstream nodes as dirty
+            for port in self.output_ports():
+                for connected_port in port.connected_ports():
+                    connected_node = connected_port.node()
+                    if hasattr(connected_node, 'mark_dirty'):
+                        connected_node.mark_dirty()
     
     def _mark_downstream_dirty(self):
         """Mark downstream nodes as dirty if appropriate"""
@@ -191,6 +196,74 @@ class OllamaBaseNode(BaseNode):
                     if recalc_mode != 'Never dirty':  # Only propagate if not 'Never dirty'
                         connected_node.mark_dirty()
     
+    def serialize(self):
+        """
+        Serialize the node data for saving.
+        Override NodeGraphQt's BaseNode serialize to include our custom data.
+        """
+        # We'll create our own custom data dictionary instead of extending the base one
+        # This avoids potential conflicts with NodeGraphQt's serialization
+        node_dict = {}
+        
+        # Add our custom fields only - don't include base node fields since they're handled by NodeGraphQt
+        if hasattr(self, 'output_cache') and self.output_cache:
+            # We need to make sure the output cache is serializable
+            # First, we'll make a deep copy to avoid modifying the original
+            import copy
+            serializable_cache = copy.deepcopy(self.output_cache)
+            
+            # Clean up any non-serializable objects
+            def make_serializable(obj):
+                if isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                elif isinstance(obj, (list, tuple)):
+                    return [make_serializable(item) for item in obj]
+                elif isinstance(obj, dict):
+                    return {str(k): make_serializable(v) for k, v in obj.items()}
+                else:
+                    # Convert to string for anything else
+                    return str(obj)
+            
+            # Apply the cleanup to the cache
+            serializable_cache = make_serializable(serializable_cache)
+            
+            # Store the cleaned cache
+            node_dict['ollama_output_cache'] = serializable_cache
+            
+            print(f"Node {self.name()}: Serialized output cache with {len(serializable_cache)} entries")
+        
+        # Store processing state flags
+        node_dict['ollama_dirty'] = self.dirty if hasattr(self, 'dirty') else True
+        node_dict['ollama_processing_done'] = self.processing_done if hasattr(self, 'processing_done') else True
+        
+        return node_dict
+
+    def deserialize(self, node_dict, namespace=None, context=None):
+        """
+        Deserialize the node data when loading.
+        We're only handling our custom fields here.
+        """
+        # Only restore our custom fields
+        if 'ollama_output_cache' in node_dict:
+            self.output_cache = node_dict['ollama_output_cache']
+            print(f"Node {self.name()}: Restored output cache with {len(self.output_cache)} entries")
+        
+        # Restore processing state flags
+        if 'ollama_dirty' in node_dict:
+            self.dirty = node_dict['ollama_dirty']
+        
+        if 'ollama_processing_done' in node_dict:
+            self.processing_done = node_dict['ollama_processing_done']
+        
+        # If in "Never dirty" mode and we have a cache, ensure it stays not dirty
+        try:
+            recalc_mode = self.get_property('recalculation_mode')
+            if recalc_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
+                self.dirty = False
+                print(f"Node {self.name()}: Set to not dirty based on 'Never dirty' mode and restored cache")
+        except Exception as e:
+            print(f"Node {self.name()}: Error checking recalculation mode during deserialization: {e}")
+
     def execute(self):
         """
         Override this method in subclasses to implement node-specific processing logic.
@@ -210,34 +283,54 @@ class OllamaBaseNode(BaseNode):
         # Update status
         self.status = "Processing..."
         self.set_property('status_info', "Processing...")
-        print(f"Node {self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else 'Unknown'}: Status set to Processing...")
+        node_name = self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else "Unknown"
+        print(f"Node {node_name}: Status set to Processing...")
         
         # Get the current recalculation mode
         recalculation_mode = self.get_property('recalculation_mode')
         
         # If already processing, just return cached output to prevent cycles
         if self.processing:
-            print(f"Node {self.name()}: Already processing, returning cached output to avoid cycle")
-            return self.output_cache
+            print(f"Node {node_name}: Already processing, returning cached output to avoid cycle")
+            return self.output_cache or {}
         
         # Handle caching based on recalculation mode
-        if recalculation_mode == 'Never dirty' and self.output_cache:
+        if recalculation_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
             self.status = "Complete (cached)"
             self.set_property('status_info', "Complete (cached)")
-            print(f"Node {self.name()}: Using cached output (Never dirty mode)")
+            print(f"Node {node_name}: Using cached output (Never dirty mode)")
             return self.output_cache
             
         # Default behavior: if not dirty and we have cached output, return it
-        if recalculation_mode == 'Dirty if inputs change' and not self.dirty and self.output_cache:
+        if recalculation_mode == 'Always dirty':
+            # Always recalculate for this mode, even if not dirty
+            print(f"Node {node_name}: Always dirty mode - forcing recalculation")
+        elif not self.dirty and hasattr(self, 'output_cache') and self.output_cache:
             self.status = "Complete (cached)"
             self.set_property('status_info', "Complete (cached)")
-            print(f"Node {self.name()}: Using cached output (not dirty)")
+            print(f"Node {node_name}: Using cached output (not dirty)")
             return self.output_cache
         
         # Process all input dependencies first
         # This ensures all inputs are up-to-date before we execute
         try:
-            self._process_input_dependencies()
+            # Only process dependencies if we're being called directly (not from workflow executor)
+            # We can detect this by checking if there's a calling method on the stack
+            import inspect
+            caller_frames = inspect.stack()
+            if len(caller_frames) > 1:
+                caller_name = caller_frames[1].function if hasattr(caller_frames[1], 'function') else ""
+                if caller_name != '_execute_workflow_thread':
+                    # If we're not being called from the workflow executor's main processing method,
+                    # we need to ensure dependencies are processed
+                    print(f"Node {node_name}: Processing dependencies (called from {caller_name})")
+                    self._process_input_dependencies()
+                else:
+                    print(f"Node {node_name}: Skipping dependency processing (called from workflow executor)")
+            else:
+                # No caller frame means we're being called directly
+                print(f"Node {node_name}: Processing dependencies (direct call)")
+                self._process_input_dependencies()
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -262,8 +355,10 @@ class OllamaBaseNode(BaseNode):
                 # Check if output has changed
                 output_changed = self._has_output_changed(result)
                 
-                # Update the cache
-                self.output_cache = copy.deepcopy(result)
+                # Update the cache - use deep copy to avoid reference issues
+                if result:
+                    import copy
+                    self.output_cache = copy.deepcopy(result)
                 
                 # Clear dirty flag
                 self.dirty = False
@@ -274,10 +369,15 @@ class OllamaBaseNode(BaseNode):
                 
                 self.status = "Complete"
                 self.set_property('status_info', "Complete")
-                print(f"Node {self.name()}: Execution complete, status set to Complete")
+                print(f"Node {node_name}: Execution complete, status set to Complete")
                 self.processing_done = True
+                self.processing = False
+            else:
+                # For async nodes, the thread will handle the output cache update
+                # But we need to make sure the node is properly marked as processing
+                print(f"Node {node_name}: Async execution started")
             
-            return result
+            return result or {}
             
         except Exception as e:
             import traceback
@@ -286,16 +386,50 @@ class OllamaBaseNode(BaseNode):
             error_msg = f"Error: {str(e)[:30]}..."
             self.status = error_msg
             self.set_property('status_info', error_msg)
-            print(f"Node {self.name()}: Execution error: {error_msg}")
+            print(f"Node {node_name}: Execution error: {error_msg}")
             self.processing_done = True
+            self.processing = False
             
             return {}
-            
-        finally:
-            # Only set processing complete for non-async nodes
-            if not self.is_async_node:
-                self.processing = False
     
+    def async_processing_complete(self, result_dict=None):
+        """
+        Call this method from async nodes when background processing is complete.
+        This ensures proper dirty state management for async nodes.
+        
+        Args:
+            result_dict: Optional dictionary of output values to set in output_cache
+        """
+        node_name = self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else "Unknown"
+        print(f"Node {node_name}: Async processing complete")
+        
+        # If result_dict provided, update output_cache
+        if result_dict:
+            # Check if output has changed
+            output_changed = self._has_output_changed(result_dict)
+            
+            # Update the cache with a deep copy to avoid reference issues
+            import copy
+            self.output_cache = copy.deepcopy(result_dict)
+            
+            # If output changed and not in Never dirty mode, mark downstream nodes dirty
+            recalculation_mode = self.get_property('recalculation_mode')
+            if output_changed and recalculation_mode != 'Never dirty':
+                print(f"Node {node_name}: Output changed, marking downstream nodes as dirty")
+                self._mark_downstream_dirty()
+            
+            print(f"Node {node_name}: Updated output cache with {len(result_dict)} entries")
+        
+        # Clear dirty flag - async processing is now complete
+        self.dirty = False
+        self.processing = False
+        self.processing_done = True
+        
+        # Make sure status is updated
+        if not self.processing_error:
+            self.status = "Complete"
+            self.set_property('status_info', "Complete")
+
     def _has_output_changed(self, new_output):
         """Check if the output has changed compared to the cached output"""
         if not hasattr(self, 'output_cache') or not self.output_cache:

@@ -169,20 +169,18 @@ class PromptNode(OllamaBaseNode):
                 elif self.get_property_value('filter_mode') == 'Extract Pattern':
                     print(f"Check if pattern '{self.get_property_value('filter_pattern')}' matches anything in the response")
             
-            # Once complete, update output_cache with both raw and filtered responses
-            self.output_cache = {
+            # Prepare result dictionary
+            result_dict = {
                 'Raw Response': self.response,
                 'Response': filtered_response
             }
-            self.dirty = False
+            
+            # Use the base node's method to handle async completion
+            self.async_processing_complete(result_dict)
             
             # Use signal to update status from worker thread
             final_status = f"Complete: {self.token_count} tokens"
             self.signals.update_status.emit(self, final_status)
-            
-            # Mark as not processing and done
-            self.processing = False
-            self.processing_done = True
             
             # Update both raw and filtered previews with the final content
             raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')

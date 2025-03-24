@@ -9,7 +9,7 @@
     "reject_connection_types": {}
   },
   "nodes": {
-    "0x1e4dd9a1af0": {
+    "0x202dc641af0": {
       "type_": "com.ollamaflow.nodes.StaticTextNode",
       "icon": null,
       "name": "Static Text",
@@ -49,7 +49,7 @@
         "status_info": "Complete"
       }
     },
-    "0x1e4dd9a2990": {
+    "0x202dc6427b0": {
       "type_": "com.ollamaflow.nodes.StaticTextNode",
       "icon": null,
       "name": "Static Text 1",
@@ -89,7 +89,7 @@
         "status_info": "Complete"
       }
     },
-    "0x1e4dd9a3860": {
+    "0x202da9156a0": {
       "type_": "com.ollamaflow.nodes.JoinNode",
       "icon": null,
       "name": "Join",
@@ -140,7 +140,7 @@
         "status_info": "Complete"
       }
     },
-    "0x1e4dd9d6240": {
+    "0x202dc642e70": {
       "type_": "com.ollamaflow.nodes.PromptNode",
       "icon": null,
       "name": "LLM Prompt",
@@ -175,7 +175,7 @@
       "port_deletion_allowed": false,
       "subgraph_session": {},
       "custom": {
-        "recalculation_mode": "Dirty if inputs change",
+        "recalculation_mode": "Never dirty",
         "model": "deepseek-r1:32b",
         "system_prompt": "You are a helpful assistant.",
         "user_prompt": "",
@@ -195,7 +195,7 @@
         "status_info": "Complete: 631 tokens"
       }
     },
-    "0x1e4dd9a2f60": {
+    "0x202dc6a2330": {
       "type_": "com.ollamaflow.nodes.PromptNode",
       "icon": null,
       "name": "LLM Prompt 1",
@@ -230,7 +230,7 @@
       "port_deletion_allowed": false,
       "subgraph_session": {},
       "custom": {
-        "recalculation_mode": "Dirty if inputs change",
+        "recalculation_mode": "Always dirty",
         "model": "deepseek-r1:32b",
         "system_prompt": "You are a helpful assistant.",
         "user_prompt": "",
@@ -250,7 +250,7 @@
         "status_info": "Complete: 580 tokens"
       }
     },
-    "0x1e4dd9ed130": {
+    "0x202dc6a39e0": {
       "type_": "com.ollamaflow.nodes.PromptNode",
       "icon": null,
       "name": "LLM Prompt 2",
@@ -273,7 +273,7 @@
         180
       ],
       "disabled": false,
-      "selected": true,
+      "selected": false,
       "visible": true,
       "width": 361.0,
       "height": 796.6,
@@ -309,61 +309,61 @@
   "connections": [
     {
       "out": [
-        "0x1e4dd9a1af0",
+        "0x202dc641af0",
         "Text"
       ],
       "in": [
-        "0x1e4dd9a3860",
+        "0x202da9156a0",
         "Input 1"
       ]
     },
     {
       "out": [
-        "0x1e4dd9a2990",
+        "0x202dc6427b0",
         "Text"
       ],
       "in": [
-        "0x1e4dd9d6240",
+        "0x202dc642e70",
         "User Prompt"
       ]
     },
     {
       "out": [
-        "0x1e4dd9a2990",
+        "0x202dc6427b0",
         "Text"
       ],
       "in": [
-        "0x1e4dd9a2f60",
+        "0x202dc6a2330",
         "User Prompt"
       ]
     },
     {
       "in": [
-        "0x1e4dd9a3860",
+        "0x202da9156a0",
         "Input 2"
       ],
       "out": [
-        "0x1e4dd9d6240",
+        "0x202dc642e70",
         "Response"
       ]
     },
     {
       "in": [
-        "0x1e4dd9a3860",
+        "0x202da9156a0",
         "Input 3"
       ],
       "out": [
-        "0x1e4dd9a2f60",
+        "0x202dc6a2330",
         "Response"
       ]
     },
     {
       "out": [
-        "0x1e4dd9a3860",
+        "0x202da9156a0",
         "Result"
       ],
       "in": [
-        "0x1e4dd9ed130",
+        "0x202dc6a39e0",
         "User Prompt"
       ]
     }

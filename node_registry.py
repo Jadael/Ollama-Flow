@@ -161,7 +161,7 @@ class NodeRegistry:
             self.discover_nodes()
             
         return [info['class'] for info in self.nodes_by_id.values()]
-    
+        
     def register_all_nodes(self, graph):
         """
         Register all discovered nodes with the NodeGraph instance.
@@ -171,6 +171,9 @@ class NodeRegistry:
         """
         if not self.discovered:
             self.discover_nodes()
+        
+        # Register serialization hooks for custom node data
+        self._register_serialization_hooks(graph)
         
         # Use the appropriate registration method based on what's available
         try:
@@ -214,6 +217,75 @@ class NodeRegistry:
             import traceback
             traceback.print_exc()
             return False
+
+    def _register_serialization_hooks(self, graph):
+        """
+        Register serialization hooks to ensure our custom node data is saved/loaded.
+        
+        Args:
+            graph: The NodeGraph instance
+        """
+        try:
+            # Try to access session class - this is what handles serialization
+            session = None
+            if hasattr(graph, '_session'):
+                session = graph._session
+            elif hasattr(graph, '_NodeGraph__session'):
+                session = graph._NodeGraph__session
+            
+            if not session:
+                print("Warning: Could not access session for serialization hooks")
+                return
+            
+            # Register hooks for serializing custom node data
+            print("Registering serialization hooks for custom node data")
+            
+            # Store original methods to call them from our overrides
+            orig_serialize = getattr(session, 'serialize_node', None)
+            orig_deserialize = getattr(session, 'deserialize_node', None)
+            
+            # Only replace if we found the original methods
+            if orig_serialize and orig_deserialize:
+                def serialize_node_override(node):
+                    """Override to include our custom data"""
+                    node_dict = orig_serialize(node)
+                    
+                    # Add our custom data if the node has our methods
+                    if hasattr(node, 'serialize') and callable(node.serialize):
+                        try:
+                            custom_data = node.serialize()
+                            # Merge custom data into node_dict
+                            for key, value in custom_data.items():
+                                if key not in node_dict:
+                                    node_dict[key] = value
+                        except Exception as e:
+                            print(f"Error in custom node serialization: {e}")
+                    
+                    return node_dict
+                
+                def deserialize_node_override(node_data, node):
+                    """Override to handle our custom data"""
+                    # First call original deserialize
+                    orig_deserialize(node_data, node)
+                    
+                    # Then apply our custom deserialization if the node has our method
+                    if hasattr(node, 'deserialize') and callable(node.deserialize):
+                        try:
+                            node.deserialize(node_data)
+                        except Exception as e:
+                            print(f"Error in custom node deserialization: {e}")
+                
+                # Replace the methods with our overrides
+                setattr(session, 'serialize_node', serialize_node_override)
+                setattr(session, 'deserialize_node', deserialize_node_override)
+                print("Successfully registered serialization hooks")
+            else:
+                print("Warning: Could not find serialization methods to override")
+                
+        except Exception as e:
+            print(f"Error registering serialization hooks: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 # Create a singleton instance

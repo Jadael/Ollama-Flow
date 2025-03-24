@@ -145,7 +145,11 @@ class OllamaFlow(QMainWindow):
                 # Install tooltips on the graph
                 self.tooltip_manager = install_port_tooltips(self.graph)
                 if self.tooltip_manager:
-                    self.statusBar.showMessage("Port tooltips enabled", 3000)
+                    # Make sure statusBar is accessed properly
+                    if hasattr(self, 'statusBar') and isinstance(self.statusBar, QStatusBar):
+                        self.statusBar.showMessage("Port tooltips enabled", 3000)
+                    else:
+                        print("Port tooltips enabled")
                     print("Port tooltips enabled")
                 else:
                     print("Warning: Could not initialize port tooltips")
@@ -419,7 +423,26 @@ class OllamaFlow(QMainWindow):
     
     def new_workflow(self):
         """Create a new workflow"""
-        self.graph.clear_all()
+        # Clear the current graph - use the correct method based on what's available
+        if hasattr(self.graph, 'clear_all') and callable(self.graph.clear_all):
+            self.graph.clear_all()
+        elif hasattr(self.graph, 'clear') and callable(self.graph.clear):
+            self.graph.clear()
+        else:
+            # Alternative approach: delete all nodes individually
+            all_nodes = []
+            if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
+                all_nodes = self.graph.all_nodes()
+            elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
+                all_nodes = self.graph.nodes()
+            
+            # Delete each node
+            for node in all_nodes[:]:  # Copy the list to avoid modification issues
+                if hasattr(self.graph, 'delete_node') and callable(self.graph.delete_node):
+                    self.graph.delete_node(node)
+                elif hasattr(self.graph, 'remove_node') and callable(self.graph.remove_node):
+                    self.graph.remove_node(node)
+        
         self.statusBar.showMessage("New workflow created")
     
     def save_workflow(self):
@@ -433,20 +456,80 @@ class OllamaFlow(QMainWindow):
             if not file_path.endswith('.json'):
                 file_path += '.json'
                 
-            # Use NodeGraphQt's export_session functionality instead of save
+            # Prepare all nodes for saving first
+            all_nodes = []
+            if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
+                all_nodes = self.graph.all_nodes()
+            elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
+                all_nodes = self.graph.nodes()
+            
+            print(f"Preparing {len(all_nodes)} nodes for saving...")
+            
+            # Update processing state and ensure serialization works
+            for node in all_nodes:
+                try:
+                    # Ensure all nodes that are done processing are marked as such
+                    if hasattr(node, 'processing') and not node.processing:
+                        node.processing_done = True
+                    
+                    # Make sure non-dirty nodes with output stay non-dirty
+                    if hasattr(node, 'get_property') and hasattr(node, 'output_cache') and node.output_cache:
+                        try:
+                            mode = node.get_property('recalculation_mode')
+                            if mode == 'Never dirty':
+                                node.dirty = False
+                                print(f"Node {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}: Ensuring not dirty before save")
+                        except:
+                            pass
+                except Exception as e:
+                    print(f"Error preparing node for save: {e}")
+            
+            # Use NodeGraphQt's export_session functionality
             try:
+                print("Exporting session...")
+                
                 if hasattr(self.graph, 'export_session'):
                     self.graph.export_session(file_path)
+                    print(f"Session exported to {file_path}")
                 elif hasattr(self.graph, 'serialize_session'):
                     # Alternative method used in some versions
                     session_data = self.graph.serialize_session()
+                    
+                    # Check if our custom data was included
+                    ollamaflow_data_included = False
+                    for node_data in session_data.get('nodes', []):
+                        if any(key.startswith('ollama_') for key in node_data.keys()):
+                            ollamaflow_data_included = True
+                            break
+                    
+                    if not ollamaflow_data_included:
+                        print("Warning: NodeGraphQt serialization did not include OllamaFlow custom data")
+                        # We'll manually add our data to each node
+                        for node_data in session_data.get('nodes', []):
+                            node_id = node_data.get('id')
+                            # Find the corresponding node
+                            for node in all_nodes:
+                                if hasattr(node, 'id') and node.id == node_id:
+                                    # Add our custom data
+                                    if hasattr(node, 'serialize') and callable(node.serialize):
+                                        try:
+                                            custom_data = node.serialize()
+                                            # Add all ollama_ keys
+                                            for key, value in custom_data.items():
+                                                if key.startswith('ollama_'):
+                                                    node_data[key] = value
+                                        except Exception as e:
+                                            print(f"Error adding custom data for node {node_id}: {e}")
+                    
                     with open(file_path, 'w') as f:
                         json.dump(session_data, f, indent=2)
+                    print(f"Session data written to {file_path}")
                 else:
                     self.statusBar.showMessage("Error: Unable to save workflow - method not found")
                     return
                     
                 self.statusBar.showMessage(f"Workflow saved to {file_path}")
+                
             except Exception as e:
                 print(f"Error saving workflow: {e}")
                 import traceback
@@ -460,20 +543,97 @@ class OllamaFlow(QMainWindow):
         )
         
         if file_path:
-            # Use NodeGraphQt's import_session functionality instead of load
+            # Use NodeGraphQt's import_session functionality
             try:
+                print(f"Loading workflow from {file_path}...")
+                
+                # First check if file contains our custom data
+                contains_custom_data = False
+                try:
+                    with open(file_path, 'r') as f:
+                        session_data = json.load(f)
+                        
+                    for node_data in session_data.get('nodes', []):
+                        if any(key.startswith('ollama_') for key in node_data.keys()):
+                            contains_custom_data = True
+                            print("File contains OllamaFlow custom data")
+                            break
+                            
+                    if not contains_custom_data:
+                        print("Warning: File does not contain OllamaFlow custom data - caches won't be restored")
+                except:
+                    print("Could not pre-check file for custom data")
+                
+                # Clear the current graph first - use the correct method based on what's available
+                if hasattr(self.graph, 'clear_all') and callable(self.graph.clear_all):
+                    self.graph.clear_all()
+                elif hasattr(self.graph, 'clear') and callable(self.graph.clear):
+                    self.graph.clear()
+                else:
+                    # Alternative approach: delete all nodes individually
+                    all_nodes = []
+                    if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
+                        all_nodes = self.graph.all_nodes()
+                    elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
+                        all_nodes = self.graph.nodes()
+                    
+                    # Delete each node
+                    for node in all_nodes[:]:  # Copy the list to avoid modification issues
+                        if hasattr(self.graph, 'delete_node') and callable(self.graph.delete_node):
+                            self.graph.delete_node(node)
+                        elif hasattr(self.graph, 'remove_node') and callable(self.graph.remove_node):
+                            self.graph.remove_node(node)
+                
+                # Import the session
                 if hasattr(self.graph, 'import_session'):
                     self.graph.import_session(file_path)
+                    print("Session imported")
                 elif hasattr(self.graph, 'deserialize_session'):
                     # Alternative method used in some versions
                     with open(file_path, 'r') as f:
                         session_data = json.load(f)
                     self.graph.deserialize_session(session_data)
+                    print("Session deserialized")
                 else:
                     self.statusBar.showMessage("Error: Unable to load workflow - method not found")
                     return
                     
+                # After loading, verify "Never dirty" nodes have properly restored caches
+                all_nodes = []
+                if hasattr(self.graph, 'all_nodes') and callable(getattr(self.graph, 'all_nodes')):
+                    all_nodes = self.graph.all_nodes()
+                elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
+                    all_nodes = self.graph.nodes()
+                    
+                for node in all_nodes:
+                    # For each node, check recalculation mode and adjust dirty flag if needed
+                    try:
+                        node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                        
+                        # Check if cache was properly restored
+                        has_cache = hasattr(node, 'output_cache') and node.output_cache
+                        
+                        if has_cache:
+                            print(f"Node {node_name}: Output cache restored with {len(node.output_cache)} entries")
+                            
+                            # Check recalculation mode
+                            if hasattr(node, 'get_property') and callable(getattr(node, 'get_property')):
+                                recalc_mode = node.get_property('recalculation_mode')
+                                if recalc_mode == 'Never dirty':
+                                    node.dirty = False
+                                    node.processing_done = True
+                                    print(f"Node {node_name}: Set to not dirty (Never dirty mode with cache)")
+                                elif not node.dirty:
+                                    print(f"Node {node_name}: Keeping not dirty state with cache")
+                                else:
+                                    print(f"Node {node_name}: Dirty with cache (normal behavior)")
+                        else:
+                            print(f"Node {node_name}: No output cache restored")
+                    except Exception as e:
+                        print(f"Error checking node after load: {e}")
+                
                 self.statusBar.showMessage(f"Workflow loaded from {file_path}")
+                
             except Exception as e:
                 print(f"Error loading workflow: {e}")
                 import traceback
@@ -502,21 +662,21 @@ class OllamaFlow(QMainWindow):
         print(f"Workflow completion received: Success={success}, Message={message}")
         self.statusBar.showMessage(message)
         
-        # Provide visual feedback to the user
-        try:
-            msg = QMessageBox()
-            msg.setWindowTitle("Workflow Execution")
-            if success:
-                msg.setIcon(QMessageBox.Information)
-                msg.setText("Workflow execution completed")
-            else:
-                msg.setIcon(QMessageBox.Warning)
-                msg.setText("Workflow execution issue")
-            msg.setInformativeText(message)
-            msg.setStandardButtons(QMessageBox.Ok)
-            msg.exec()
-        except Exception as e:
-            print(f"Error showing workflow completion message: {e}")
+        # # Provide visual feedback to the user
+        # try:
+        #     msg = QMessageBox()
+        #     msg.setWindowTitle("Workflow Execution")
+        #     if success:
+        #         msg.setIcon(QMessageBox.Information)
+        #         msg.setText("Workflow execution completed")
+        #     else:
+        #         msg.setIcon(QMessageBox.Warning)
+        #         msg.setText("Workflow execution issue")
+        #     msg.setInformativeText(message)
+        #     msg.setStandardButtons(QMessageBox.Ok)
+        #     msg.exec()
+        # except Exception as e:
+        #     print(f"Error showing workflow completion message: {e}")
     
     def reset_workflow(self):
         """Reset all nodes in the workflow"""
