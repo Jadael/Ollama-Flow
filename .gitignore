@@ -10,3 +10,4 @@
 *.pyc
 /__pycache__
 NodeGraphQt Source Snippets.md
+*.json

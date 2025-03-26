@@ -46,6 +46,7 @@ class SplitNode(OllamaBaseNode):
     def execute(self):
         """Process the node and return output"""
         # Get input text using our property input system
+        self.set_status("Getting input...")
         input_text = self.get_property_value('input_text')
         
         # Update input preview
@@ -59,6 +60,7 @@ class SplitNode(OllamaBaseNode):
             return {f"Output {i+1}": "" for i in range(8)} | {"Overflow": ""}
         
         try:
+            self.set_status("Processing split...")
             # Get configuration options
             delimiter = self.get_property_value('delimiter')
             use_regex = self.get_property_value('use_regex').lower() == 'true'
@@ -109,24 +111,3 @@ class SplitNode(OllamaBaseNode):
             for i in range(min(8, len(parts))):
                 part_preview = parts[i][:500] + ('...' if len(parts[i]) > 500 else '')
                 preview_text.append(f"Output {i+1}: {part_preview}")
-            
-            if len(parts) > 8:
-                overflow_count = len(parts) - 8
-                preview_text.append(f"Overflow: {overflow_count} more part(s)")
-            
-            self.set_property('output_preview', '\n\n'.join(preview_text))
-            
-            # Update status
-            if len(parts) <= 8:
-                self.set_status(f"Split into {len(parts)} part(s)")
-            else:
-                self.set_status(f"Split into {len(parts)} part(s) (8 outputs + overflow)")
-            
-            return output_data
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.set_status(f"Error: {str(e)[:20]}...")
-            self.set_property('output_preview', f"Error: {str(e)}")
-            return {f"Output {i+1}": "" for i in range(8)} | {"Overflow": ""}

@@ -46,6 +46,9 @@ class JoinNode(OllamaBaseNode):
         values = []
         empty_count = 0
         
+        # Set initial status
+        self.set_status("Processing inputs...")
+        
         # Process inputs in order
         for i in range(8):
             input_num = i + 1
@@ -55,38 +58,24 @@ class JoinNode(OllamaBaseNode):
             # Track if we've found a value for this input
             value_found = False
             
-            # Check for direct input connection on this port
-            for port in self.input_ports():
-                if port.name() == input_port_name and port.connected_ports():
-                    # Get data from connected node
-                    conn_port = port.connected_ports()[0]
-                    conn_node = conn_port.node()
-                    
-                    # Process the connected node if needed
-                    if hasattr(conn_node, 'dirty') and conn_node.dirty and hasattr(conn_node, 'compute'):
-                        conn_node.compute()
-                    
-                    # Get the value from the connected node's output
-                    if hasattr(conn_node, 'output_cache'):
-                        conn_port_name = conn_port.name()
-                        input_value = conn_node.output_cache.get(conn_port_name)
-                        
-                        if input_value is not None and input_value != '':
-                            value_str = str(input_value)
-                            
-                            # Apply trimming if enabled
-                            if self.get_property('trim_whitespace').lower() == 'true':
-                                value_str = value_str.strip()
-                            
-                            # Add to values if not skipping empty or if not empty
-                            if not self.get_property('skip_empty').lower() == 'true' or value_str:
-                                values.append(value_str)
-                                value_found = True
-                    
-                    break  # Only process the first connected port
+            # Use the proper base node method to get input data
+            # This method handles waiting for async nodes properly
+            input_value = self.get_input_data(input_port_name)
             
+            # If we got a value from the connection
+            if input_value is not None:
+                value_str = str(input_value)
+                
+                # Apply trimming if enabled
+                if self.get_property('trim_whitespace').lower() == 'true':
+                    value_str = value_str.strip()
+                
+                # Add to values if not skipping empty or if not empty
+                if not self.get_property('skip_empty').lower() == 'true' or value_str:
+                    values.append(value_str)
+                    value_found = True
             # If no value from connection, check the property value
-            if not value_found:
+            else:
                 prop_value = self.get_property(prop_name)
                 
                 if prop_value is None or prop_value == '':

@@ -159,21 +159,29 @@ class PromptNode(OllamaBaseNode):
             self.generate_response(system_prompt, user_prompt)
             
             # Log the raw response size for debugging
-            print(f"Raw response generated - {len(self.response)} characters")
+            raw_size = len(self.response)
+            print(f"Raw response generated - {raw_size} characters")
             
-            # Apply filtering to the response only after generation is complete
-            print(f"Preparing to filter response with mode: {self.get_property_value('filter_mode')}")
+            # Cache filter_mode and filter_pattern values at the time of processing
+            # This ensures they don't change while the async operation is in progress
+            filter_mode = self.get_property_value('filter_mode')
+            filter_pattern = self.get_property_value('filter_pattern')
+            print(f"Preparing to filter response with mode: {filter_mode}")
+            print(f"Using filter pattern: {filter_pattern}")
+            
+            # Apply filtering to the response
             filtered_response = self.apply_response_filtering(self.response)
             
-            print(f"Filtering complete - Raw: {len(self.response)} chars, Filtered: {len(filtered_response)} chars")
+            filtered_size = len(filtered_response)
+            print(f"Filtering complete - Raw: {raw_size} chars, Filtered: {filtered_size} chars")
             
             # Verify filtering actually did something
-            if filtered_response == self.response and self.get_property_value('filter_mode') != 'None':
-                print("WARNING: Filtered response is identical to raw response despite filtering being enabled")
-                if self.get_property_value('filter_mode') == 'Remove Pattern':
-                    print(f"Check if pattern '{self.get_property_value('filter_pattern')}' exists in the response")
-                elif self.get_property_value('filter_mode') == 'Extract Pattern':
-                    print(f"Check if pattern '{self.get_property_value('filter_pattern')}' matches anything in the response")
+            if filtered_response == self.response and filter_mode != 'None':
+                print(f"WARNING: Filtered response is identical to raw response despite filtering mode: {filter_mode}")
+                if filter_mode == 'Remove Pattern':
+                    print(f"Check if pattern '{filter_pattern}' exists in the response")
+                elif filter_mode == 'Extract Pattern':
+                    print(f"Check if pattern '{filter_pattern}' matches anything in the response")
             
             # Store the full output values in properties for serialization
             self.thread_safe_set_property('full_raw_response', self.response)
@@ -213,7 +221,8 @@ class PromptNode(OllamaBaseNode):
     
     def apply_response_filtering(self, text):
         """Apply regex filtering to the response based on filter settings"""
-        filter_mode = self.get_property_value('filter_mode')
+        # Get filter mode directly from property
+        filter_mode = self.get_property('filter_mode')
         
         print(f"Applying filter mode: '{filter_mode}'")
         
@@ -224,7 +233,7 @@ class PromptNode(OllamaBaseNode):
             
         try:
             # Get pattern
-            pattern = self.get_property_value('filter_pattern')
+            pattern = self.get_property('filter_pattern')
             if not pattern:
                 print("No filter pattern provided - returning original text")
                 return text
@@ -233,18 +242,18 @@ class PromptNode(OllamaBaseNode):
             
             # Compile regex with flags if enabled
             flags = 0
-            use_flags = self.get_property_value('use_regex_flags').lower() == 'true'
+            use_flags = self.get_property('use_regex_flags').lower() == 'true'
             
             if use_flags:
-                if self.get_property_value('dotall_flag').lower() == 'true':
+                if self.get_property('dotall_flag').lower() == 'true':
                     flags |= re.DOTALL
                     print("Using DOTALL flag")
                     
-                if self.get_property_value('multiline_flag').lower() == 'true':
+                if self.get_property('multiline_flag').lower() == 'true':
                     flags |= re.MULTILINE
                     print("Using MULTILINE flag")
                     
-                if self.get_property_value('ignorecase_flag').lower() == 'true':
+                if self.get_property('ignorecase_flag').lower() == 'true':
                     flags |= re.IGNORECASE
                     print("Using IGNORECASE flag")
             

@@ -258,124 +258,212 @@ class OllamaBaseNode(BaseNode):
     def process(self):
         """Process this node, getting inputs from connected nodes and returning outputs"""
         return self.compute()
-        
+    
     def compute(self):
-        """
-        Process this node (should be called when inputs change).
-        Enhanced with improved dependency handling and output change detection.
-        """
-        # Update status
-        self.status = "Processing..."
-        self.set_property('status_info', "Processing...")
-        node_name = self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else "Unknown"
-        print(f"Node {node_name}: Status set to Processing...")
-        
-        # Get the current recalculation mode
-        recalculation_mode = self.get_property('recalculation_mode')
-        
-        # If already processing, just return cached output to prevent cycles
-        if self.processing:
-            print(f"Node {node_name}: Already processing, returning cached output to avoid cycle")
-            return self.output_cache or {}
-        
-        # Handle caching based on recalculation mode
-        if recalculation_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
-            self.status = "Complete (cached)"
-            self.set_property('status_info', "Complete (cached)")
-            print(f"Node {node_name}: Using cached output (Never dirty mode)")
-            return self.output_cache
+            """
+            Process this node (should be called when inputs change).
+            Enhanced with improved dependency handling and output change detection.
+            """
+            # Update status
+            self.status = "Processing..."
+            self.set_property('status_info', "Processing...")
+            node_name = self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else "Unknown"
+            print(f"Node {node_name}: Status set to Processing...")
             
-        # Default behavior: if not dirty and we have cached output, return it
-        if recalculation_mode == 'Always dirty':
-            # Always recalculate for this mode, even if not dirty
-            print(f"Node {node_name}: Always dirty mode - forcing recalculation")
-        elif not self.dirty and hasattr(self, 'output_cache') and self.output_cache:
-            self.status = "Complete (cached)"
-            self.set_property('status_info', "Complete (cached)")
-            print(f"Node {node_name}: Using cached output (not dirty)")
-            return self.output_cache
-        
-        # Process all input dependencies first
-        # This ensures all inputs are up-to-date before we execute
-        try:
-            # Only process dependencies if we're being called directly (not from workflow executor)
-            # We can detect this by checking if there's a calling method on the stack
-            import inspect
-            caller_frames = inspect.stack()
-            if len(caller_frames) > 1:
-                caller_name = caller_frames[1].function if hasattr(caller_frames[1], 'function') else ""
-                if caller_name != '_execute_workflow_thread':
-                    # If we're not being called from the workflow executor's main processing method,
-                    # we need to ensure dependencies are processed
-                    print(f"Node {node_name}: Processing dependencies (called from {caller_name})")
+            # Get the current recalculation mode
+            recalculation_mode = self.get_property('recalculation_mode')
+            
+            # If already processing, just return cached output to prevent cycles
+            if self.processing:
+                print(f"Node {node_name}: Already processing, returning cached output to avoid cycle")
+                return self.output_cache or {}
+            
+            # Handle caching based on recalculation mode
+            if recalculation_mode == 'Never dirty' and hasattr(self, 'output_cache') and self.output_cache:
+                self.status = "Complete (cached)"
+                self.set_property('status_info', "Complete (cached)")
+                print(f"Node {node_name}: Using cached output (Never dirty mode)")
+                return self.output_cache
+                
+            # Default behavior: if not dirty and we have cached output, return it
+            if recalculation_mode == 'Always dirty':
+                # Always recalculate for this mode, even if not dirty
+                print(f"Node {node_name}: Always dirty mode - forcing recalculation")
+            elif not self.dirty and hasattr(self, 'output_cache') and self.output_cache:
+                self.status = "Complete (cached)"
+                self.set_property('status_info', "Complete (cached)")
+                print(f"Node {node_name}: Using cached output (not dirty)")
+                return self.output_cache
+            
+            # Process all input dependencies first
+            # This ensures all inputs are up-to-date before we execute
+            try:
+                # Check if we're being called from the workflow executor
+                # If so, skip dependency processing as the executor should handle dependencies
+                from_executor = getattr(self, '_from_workflow_executor', False)
+                
+                if not from_executor:
+                    # If we're not being called from the workflow executor, process dependencies
+                    print(f"Node {node_name}: Processing dependencies (direct call)")
                     self._process_input_dependencies()
                 else:
                     print(f"Node {node_name}: Skipping dependency processing (called from workflow executor)")
-            else:
-                # No caller frame means we're being called directly
-                print(f"Node {node_name}: Processing dependencies (direct call)")
-                self._process_input_dependencies()
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.processing_error = str(e)
-            error_msg = f"Error in dependencies: {str(e)[:30]}..."
-            self.status = error_msg
-            self.set_property('status_info', error_msg)
-            return {}
-        
-        # Set processing state
-        self.processing = True
-        self.processing_done = False
-        self.processing_error = None
-        self.processing_start_time = time.time()
-        
-        try:
-            # Execute the actual node-specific processing logic
-            result = self.execute()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.processing_error = str(e)
+                error_msg = f"Error in dependencies: {str(e)[:30]}..."
+                self.status = error_msg
+                self.set_property('status_info', error_msg)
+                return {}
             
-            # For synchronous nodes, update cache and state
-            if not self.is_async_node:
-                # Check if output has changed
-                output_changed = self._has_output_changed(result)
+            # Set processing state
+            self.processing = True
+            self.processing_done = False
+            self.processing_error = None
+            self.processing_start_time = time.time()
+            
+            try:
+                # Execute the actual node-specific processing logic
+                result = self.execute()
                 
-                # Update the cache - use deep copy to avoid reference issues
-                if result:
-                    import copy
-                    self.output_cache = copy.deepcopy(result)
+                # For synchronous nodes, update cache and state
+                if not self.is_async_node:
+                    # Check if output has changed
+                    output_changed = self._has_output_changed(result)
+                    
+                    # Update the cache - use deep copy to avoid reference issues
+                    if result:
+                        import copy
+                        self.output_cache = copy.deepcopy(result)
+                    
+                    # Clear dirty flag
+                    self.dirty = False
+                    
+                    # If output changed and mode isn't 'Never dirty', mark downstream nodes dirty
+                    if output_changed and recalculation_mode != 'Never dirty':
+                        self._mark_downstream_dirty()
+                    
+                    self.status = "Complete"
+                    self.set_property('status_info', "Complete")
+                    print(f"Node {node_name}: Execution complete, status set to Complete")
+                    self.processing_done = True
+                    self.processing = False
+                else:
+                    # For async nodes, the thread will handle the output cache update
+                    # But we need to make sure the node is properly marked as processing
+                    print(f"Node {node_name}: Async execution started")
                 
-                # Clear dirty flag
-                self.dirty = False
+                return result or {}
                 
-                # If output changed and mode isn't 'Never dirty', mark downstream nodes dirty
-                if output_changed and recalculation_mode != 'Never dirty':
-                    self._mark_downstream_dirty()
-                
-                self.status = "Complete"
-                self.set_property('status_info', "Complete")
-                print(f"Node {node_name}: Execution complete, status set to Complete")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.processing_error = str(e)
+                error_msg = f"Error: {str(e)[:30]}..."
+                self.status = error_msg
+                self.set_property('status_info', error_msg)
+                print(f"Node {node_name}: Execution error: {error_msg}")
                 self.processing_done = True
                 self.processing = False
+                
+                return {}
+        
+    def _process_input_dependencies(self):
+        """
+        Processes all input dependencies to ensure they're computed before this node.
+        """
+        # Keep track of visited nodes to prevent cycles
+        if not hasattr(self, '_visited_dependencies'):
+            self._visited_dependencies = set()
+        
+        # If this node is already in the visited set, we have a cycle
+        node_name = self.name() if hasattr(self, 'name') and callable(getattr(self, 'name')) else "Unknown"
+        if self in self._visited_dependencies:
+            print(f"Warning: Dependency cycle detected for node {node_name}")
+            return
+        
+        # Add this node to the visited set
+        self._visited_dependencies.add(self)
+        
+        try:
+            # Get all input ports
+            if callable(getattr(self, 'input_ports', None)):
+                input_ports = self.input_ports()
+            elif hasattr(self, 'inputs'):
+                input_ports = self.inputs
             else:
-                # For async nodes, the thread will handle the output cache update
-                # But we need to make sure the node is properly marked as processing
-                print(f"Node {node_name}: Async execution started")
+                input_ports = []
             
-            return result or {}
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.processing_error = str(e)
-            error_msg = f"Error: {str(e)[:30]}..."
-            self.status = error_msg
-            self.set_property('status_info', error_msg)
-            print(f"Node {node_name}: Execution error: {error_msg}")
-            self.processing_done = True
-            self.processing = False
-            
-            return {}
-    
+            # Process each connected input
+            for input_port in input_ports:
+                # Get connected ports
+                if callable(getattr(input_port, 'connected_ports', None)):
+                    connected_ports = input_port.connected_ports()
+                elif hasattr(input_port, 'connections'):
+                    connected_ports = input_port.connections
+                else:
+                    connected_ports = []
+                
+                # Process each connected node
+                for connected_port in connected_ports:
+                    connected_node = connected_port.node()
+                    conn_node_name = connected_node.name() if hasattr(connected_node, 'name') and callable(getattr(connected_node, 'name')) else "Unknown"
+                    
+                    # Skip if the node is already processing (cycle detection)
+                    if hasattr(connected_node, 'processing') and connected_node.processing:
+                        print(f"Warning: Detected execution cycle between {self.name()} and {conn_node_name}")
+                        continue
+                    
+                    # Process connected node if it's dirty
+                    if hasattr(connected_node, 'dirty') and connected_node.dirty and hasattr(connected_node, 'compute'):
+                        print(f"Node {self.name()}: Processing dependency {conn_node_name}")
+                        connected_node.compute()
+                    
+                    # Wait if the node is asynchronous and still processing
+                    if hasattr(connected_node, 'processing') and connected_node.processing:
+                        # Get the timeout value - increase to 30 minutes (1800 seconds)
+                        timeout = 1800
+                        start_wait = time.time()
+                        
+                        print(f"Node {self.name()}: Waiting for async dependency {conn_node_name}")
+                        self.status = f"Waiting for {conn_node_name}..."
+                        
+                        while time.time() - start_wait < timeout:
+                            # If the connected node finished processing, break out of the loop
+                            if hasattr(connected_node, 'processing_done') and connected_node.processing_done:
+                                print(f"Node {self.name()}: Dependency {conn_node_name} completed")
+                                break
+                                
+                            # Sleep briefly to avoid busy waiting
+                            time.sleep(0.1)
+                            
+                            # Check again if it's still processing
+                            if not hasattr(connected_node, 'processing') or not connected_node.processing:
+                                print(f"Node {self.name()}: Dependency {conn_node_name} is no longer processing")
+                                break
+                        
+                        elapsed = time.time() - start_wait
+                        
+                        # If we timed out and node is still processing
+                        if hasattr(connected_node, 'processing') and connected_node.processing:
+                            if not hasattr(connected_node, 'processing_done') or not connected_node.processing_done:
+                                timeout_msg = f"Timeout waiting for {conn_node_name} after {elapsed:.1f}s"
+                                self.status = timeout_msg
+                                print(f"Node {self.name()}: {timeout_msg}")
+                                raise TimeoutError(f"Timed out waiting for input from '{conn_node_name}'")
+                        else:
+                            self.status = f"Dependency {conn_node_name} completed after {elapsed:.1f}s"
+                    
+                    # Check for errors in the dependency
+                    if hasattr(connected_node, 'processing_error') and connected_node.processing_error:
+                        error_msg = f"Error in dependency {conn_node_name}: {connected_node.processing_error}"
+                        print(f"Node {self.name()}: {error_msg}")
+                        raise ValueError(error_msg)
+        finally:
+            # Remove this node from the visited set
+            self._visited_dependencies.remove(self)
+
     def async_processing_complete(self, result_dict=None):
         """
         Call this method from async nodes when background processing is complete.
@@ -438,77 +526,6 @@ class OllamaBaseNode(BaseNode):
                     return True
                     
         return False  # No changes detected
-    
-    def _process_input_dependencies(self):
-        """
-        Processes all input dependencies to ensure they're computed before this node.
-        """
-        # Get all input ports
-        if callable(getattr(self, 'input_ports', None)):
-            input_ports = self.input_ports()
-        elif hasattr(self, 'inputs'):
-            input_ports = self.inputs
-        else:
-            input_ports = []
-        
-        # Process each connected input
-        for input_port in input_ports:
-            # Get connected ports
-            if callable(getattr(input_port, 'connected_ports', None)):
-                connected_ports = input_port.connected_ports()
-            elif hasattr(input_port, 'connections'):
-                connected_ports = input_port.connections
-            else:
-                connected_ports = []
-            
-            # Process each connected node
-            for connected_port in connected_ports:
-                connected_node = connected_port.node()
-                
-                # Skip if the node is already processing (cycle detection)
-                if hasattr(connected_node, 'processing') and connected_node.processing:
-                    print(f"Warning: Detected execution cycle between {self.name()} and {connected_node.name()}")
-                    continue
-                
-                # Process connected node if it's dirty
-                if hasattr(connected_node, 'dirty') and connected_node.dirty and hasattr(connected_node, 'compute'):
-                    print(f"Node {self.name()}: Processing dependency {connected_node.name()}")
-                    connected_node.compute()
-                
-                # Wait if the node is asynchronous and still processing
-                if hasattr(connected_node, 'processing') and connected_node.processing:
-                    # Get the timeout value - default to 120 seconds (2 minutes)
-                    timeout = 120
-                    start_wait = time.time()
-                    
-                    print(f"Node {self.name()}: Waiting for async dependency {connected_node.name()}")
-                    
-                    while time.time() - start_wait < timeout:
-                        # If the connected node finished processing, break out of the loop
-                        if hasattr(connected_node, 'processing_done') and connected_node.processing_done:
-                            break
-                            
-                        # Sleep briefly to avoid busy waiting
-                        time.sleep(0.1)
-                        
-                        # Check again if it's still processing
-                        if not hasattr(connected_node, 'processing') or not connected_node.processing:
-                            break
-                    
-                    # If we timed out and node is still processing
-                    if hasattr(connected_node, 'processing') and connected_node.processing:
-                        if not hasattr(connected_node, 'processing_done') or not connected_node.processing_done:
-                            wait_time = time.time() - start_wait
-                            timeout_msg = f"Timeout waiting for {connected_node.name()} after {wait_time:.1f}s"
-                            self.status = timeout_msg
-                            print(f"Node {self.name()}: {timeout_msg}")
-                            raise TimeoutError(f"Timed out waiting for input from '{connected_node.name()}'")
-                
-                # Check for errors in the dependency
-                if hasattr(connected_node, 'processing_error') and connected_node.processing_error:
-                    error_msg = f"Error in dependency {connected_node.name()}: {connected_node.processing_error}"
-                    print(f"Node {self.name()}: {error_msg}")
-                    raise ValueError(error_msg)
 
     def get_input_data(self, input_name):
         """Get data from an input port by name"""
@@ -525,20 +542,26 @@ class OllamaBaseNode(BaseNode):
         # Get the first connected port
         connected_port = input_port.connected_ports()[0]
         connected_node = connected_port.node()
+        connected_node_name = connected_node.name() if hasattr(connected_node, 'name') and callable(getattr(connected_node, 'name')) else "Unknown"
         
         # Process the connected node if it's dirty
         if hasattr(connected_node, 'dirty') and connected_node.dirty:
+            print(f"Node {self.name()}: Processing dependency {connected_node_name}")
             connected_node.compute()
         
         # Wait if the connected node is processing (for async nodes)
         if hasattr(connected_node, 'processing') and connected_node.processing:
-            # Simple polling with timeout
-            timeout = 120  # 2 minute timeout (120 seconds)
+            # Use a much longer timeout - LLM operations can take considerable time
+            timeout = 1800  # 30 minute timeout (1800 seconds)
             start_wait = time.time()
+            
+            print(f"Node {self.name()}: Waiting for async dependency {connected_node_name}")
+            self.status = f"Waiting for {connected_node_name}..."
             
             while time.time() - start_wait < timeout:
                 # If the connected node finished processing, break out of the loop
                 if hasattr(connected_node, 'processing_done') and connected_node.processing_done:
+                    print(f"Node {self.name()}: Dependency {connected_node_name} completed")
                     break
                     
                 # Sleep briefly to avoid busy waiting
@@ -546,22 +569,36 @@ class OllamaBaseNode(BaseNode):
                 
                 # Check again if it's still processing
                 if not hasattr(connected_node, 'processing') or not connected_node.processing:
+                    print(f"Node {self.name()}: Dependency {connected_node_name} is no longer processing")
                     break
+            
+            elapsed = time.time() - start_wait
             
             # If we timed out and node is still processing
             if hasattr(connected_node, 'processing') and connected_node.processing:
                 if not hasattr(connected_node, 'processing_done') or not connected_node.processing_done:
-                    self.status = f"Timeout waiting for {connected_node.name()}"
-                    raise TimeoutError(f"Timed out waiting for input from '{connected_node.name()}'")
+                    timeout_msg = f"Timeout waiting for {connected_node_name} after {elapsed:.1f}s"
+                    self.status = timeout_msg
+                    print(f"Node {self.name()}: {timeout_msg}")
+                    raise TimeoutError(f"Timed out waiting for input from '{connected_node_name}'")
+            else:
+                self.status = f"Dependency {connected_node_name} completed after {elapsed:.1f}s"
         
         # Check for errors in the input node
         if hasattr(connected_node, 'processing_error') and connected_node.processing_error:
-            self.status = f"Input error: {connected_node.name()}"
-            raise ValueError(f"Error in input node '{connected_node.name()}': {connected_node.processing_error}")
+            error_msg = f"Error in dependency {connected_node_name}: {connected_node.processing_error}"
+            self.status = f"Input error: {connected_node_name}"
+            print(f"Node {self.name()}: {error_msg}")
+            raise ValueError(error_msg)
         
         # Get data from the connected port's node
         if hasattr(connected_node, 'output_cache'):
-            return connected_node.output_cache.get(connected_port.name(), None)
+            value = connected_node.output_cache.get(connected_port.name(), None)
+            if value is not None:
+                print(f"Node {self.name()}: Got value from {connected_node_name} port {connected_port.name()}")
+            else:
+                print(f"Node {self.name()}: No value from {connected_node_name} port {connected_port.name()}")
+            return value
         
         return None
     

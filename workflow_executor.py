@@ -89,16 +89,19 @@ class WorkflowExecutor:
             elif hasattr(self.graph, 'nodes') and callable(getattr(self.graph, 'nodes')):
                 all_nodes = self.graph.nodes()
             
-            # Build dependency graph first
-            # This is a map of node -> list of nodes it depends on
-            dependencies = {}
-            dependents = {}  # Reverse map: nodes that depend on this node
+            # Reset the processing state for all nodes to avoid stale states
+            self._reset_processing_states(all_nodes)
+            
+            # Build dependency graph
+            # For each node, identify its ancestors (nodes it depends on)
+            ancestors = {}
+            descendants = {}  # Reverse map: nodes that depend on this node
             
             for node in all_nodes:
-                # Initialize dependency lists
-                dependencies[node] = []
-                if node not in dependents:
-                    dependents[node] = []
+                # Initialize ancestor lists
+                ancestors[node] = []
+                if node not in descendants:
+                    descendants[node] = []
                 
                 # Get input ports
                 input_ports = []
@@ -115,24 +118,26 @@ class WorkflowExecutor:
                     elif hasattr(input_port, 'connections'):
                         connected_ports = input_port.connections
                     
-                    # Add each connected node as a dependency
+                    # Add each connected node as an ancestor
                     for connected_port in connected_ports:
                         if hasattr(connected_port, 'node') and callable(getattr(connected_port, 'node')):
-                            connected_node = connected_port.node()
-                            if connected_node in all_nodes:
-                                dependencies[node].append(connected_node)
-                                if connected_node not in dependents:
-                                    dependents[connected_node] = []
-                                dependents[connected_node].append(node)
+                            ancestor_node = connected_port.node()
+                            if ancestor_node in all_nodes:
+                                ancestors[node].append(ancestor_node)
+                                if ancestor_node not in descendants:
+                                    descendants[ancestor_node] = []
+                                descendants[ancestor_node].append(node)
             
             print("Built dependency graph:")
-            for node in dependencies:
+            for node in ancestors:
                 node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
-                dep_names = [dep.name() if hasattr(dep, 'name') and callable(getattr(dep, 'name')) else "Unknown" for dep in dependencies[node]]
-                print(f"  Node {node_name} depends on: {', '.join(dep_names) if dep_names else 'None'}")
+                anc_names = [anc.name() if hasattr(anc, 'name') and callable(getattr(anc, 'name')) else "Unknown" for anc in ancestors[node]]
+                print(f"  Node {node_name} depends on: {', '.join(anc_names) if anc_names else 'None'}")
             
             # Find nodes that should be processed
+            # Find nodes that should be processed
             nodes_to_process = set()
+            initially_dirty_nodes = set()
 
             for node in all_nodes:
                 node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
@@ -181,73 +186,52 @@ class WorkflowExecutor:
                 
                 if should_process and hasattr(node, 'compute') and callable(getattr(node, 'compute')):
                     nodes_to_process.add(node)
-            
+                    initially_dirty_nodes.add(node)
+
+            # Mark downstream nodes as potentially dirty
+            print("Identifying downstream nodes that will potentially need processing...")
+            potentially_dirty_nodes = self._mark_downstream_nodes_potentially_dirty(initially_dirty_nodes, descendants)
+
+            # Add potentially dirty nodes to the processing queue
+            for node in potentially_dirty_nodes:
+                if node not in nodes_to_process and hasattr(node, 'compute') and callable(getattr(node, 'compute')):
+                    node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                    print(f"Node {node_name}: Adding to processing queue (potentially dirty)")
+                    nodes_to_process.add(node)
+
             # No nodes to process? We're done
             if not nodes_to_process:
                 print("No nodes need processing - workflow is up to date")
                 return (True, "Workflow is up to date")
+
+            print(f"Found {len(nodes_to_process)} nodes to process ({len(potentially_dirty_nodes)} potentially dirty)")
             
-            print(f"Found {len(nodes_to_process)} nodes to process")
-            
-            # Create processing queue with proper dependency order
-            processing_queue = []
-            visited = set()
-            temp_visited = set()  # For cycle detection
-            
-            def visit(node):
-                """DFS traversal to build topological sort"""
-                if node in temp_visited:
-                    # Cycle detected - graph is not acyclic
-                    print(f"Warning: Cycle detected involving node {node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else 'Unknown'}")
-                    return
-                
-                if node in visited:
-                    return
-                    
-                temp_visited.add(node)
-                
-                # Visit dependencies first
-                for dep in dependencies[node]:
-                    if dep in nodes_to_process:  # Only visit nodes that need processing
-                        visit(dep)
-                
-                # Done with dependencies, add to processing queue
-                temp_visited.remove(node)
-                visited.add(node)
-                processing_queue.append(node)
-            
-            # Start with "root" nodes - those that need processing but have no dependencies in the processing set
-            for node in nodes_to_process:
-                # Check if this node has any dependencies that need processing
-                has_unprocessed_deps = any(dep in nodes_to_process for dep in dependencies[node])
-                if not has_unprocessed_deps:
-                    visit(node)
-            
-            # Process any remaining nodes (in case of cycles)
-            for node in nodes_to_process:
-                if node not in visited:
-                    visit(node)
-            
-            # Reverse the queue for proper processing order (dependencies first)
-            processing_queue.reverse()
+            # Create processing queue with proper topological sort
+            # In a topological sort, if A depends on B, B must come before A in the output
+            processing_queue = self._topological_sort(nodes_to_process, ancestors)
             
             print("Processing queue order:")
             for i, node in enumerate(processing_queue):
                 node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
                 print(f"  {i+1}. {node_name}")
             
-            # Now process nodes in order
+            # Now process nodes in order (ancestors first)
             processed_count = 0
             
             for node in processing_queue:
                 try:
                     node_name = node.name() if hasattr(node, 'name') and callable(getattr(node, 'name')) else "Unknown"
+                    
+                    # Skip if already processing (to prevent cycles/duplicates)
+                    if hasattr(node, 'processing') and node.processing:
+                        print(f"Skipping node that's already processing: {node_name}")
+                        continue
+                    
                     print(f"Processing node: {node_name}")
                     
-                    # Call compute - make sure upstream dependencies are handled properly
-                    # Note: compute() typically has its own dependency processing, but our topological sort
-                    # should ensure minimal redundant processing
-                    node.compute()
+                    # Call compute with flag to indicate we're calling from workflow executor
+                    # This helps nodes avoid redundant dependency processing
+                    self._process_node_with_executor_flag(node)
                     processed_count += 1
                     node_processed = True
                 except Exception as e:
@@ -273,14 +257,14 @@ class WorkflowExecutor:
                 node_processed = True
             
             # Wait for all processing nodes to complete (up to timeout)
-            max_wait = 120  # 2 minute timeout (120 seconds)
+            max_wait = 3600  # 1 hour timeout (3600 seconds)
             start_time = time.time()
-            
+
             while processing_nodes and time.time() - start_time < max_wait:
                 print(f"Waiting for {len(processing_nodes)} nodes to complete processing...")
                 time.sleep(1)  # Check every second
                 processing_nodes = self._get_processing_nodes()
-            
+
             # Check if any nodes were processed
             if node_processed:
                 if processing_nodes:
@@ -289,8 +273,6 @@ class WorkflowExecutor:
                 else:
                     print(f"Workflow execution completed successfully")
                     result = (True, f"Workflow executed successfully ({processed_count} nodes processed)")
-            elif result[0]:  # If successful but no nodes processed
-                result = (True, "Workflow up to date - no processing needed")
         
         except Exception as e:
             import traceback
@@ -316,6 +298,95 @@ class WorkflowExecutor:
                         self.callback(result)
                     except Exception as e:
                         print(f"Error in callback: {e}")
+    
+    def _topological_sort(self, nodes_to_process, ancestors):
+        """
+        Perform a topological sort on the nodes to process.
+        In the result, if node A depends on node B, then B comes before A.
+        
+        Args:
+            nodes_to_process: Set of nodes that need processing
+            ancestors: Dictionary mapping each node to its ancestors (nodes it depends on)
+            
+        Returns:
+            List of nodes in topological order (ancestors first)
+        """
+        # Create a proper topological sort
+        result = []
+        temp_mark = set()  # Temporary mark for cycle detection
+        perm_mark = set()  # Permanent mark for completed nodes
+        
+        def visit(node):
+            """Visit a node and its ancestors recursively"""
+            # Check for cycles
+            if node in temp_mark:
+                print(f"Warning: Cycle detected involving node {node.name() if hasattr(node, 'name') else 'Unknown'}")
+                return
+                
+            # Skip if already processed
+            if node in perm_mark:
+                return
+                
+            # Mark temporarily for cycle detection
+            temp_mark.add(node)
+            
+            # Visit all ancestors (dependencies) first that need processing
+            for ancestor in ancestors[node]:
+                if ancestor in nodes_to_process and ancestor not in perm_mark:
+                    visit(ancestor)
+            
+            # Remove temporary mark and add permanent mark
+            temp_mark.remove(node)
+            perm_mark.add(node)
+            
+            # Add to result
+            result.append(node)
+        
+        # Visit all nodes that need processing
+        for node in nodes_to_process:
+            if node not in perm_mark:
+                visit(node)
+                
+        return result
+    
+    def _process_node_with_executor_flag(self, node):
+        """
+        Process a node with a flag to indicate we're calling from the workflow executor.
+        This allows nodes to avoid redundant dependency processing.
+        
+        Args:
+            node: The node to process
+        """
+        # Set a flag on the node to indicate we're calling from the workflow executor
+        # This can be used by the node to avoid redundant dependency processing
+        try:
+            from_executor = getattr(node, '_from_workflow_executor', False)
+            node._from_workflow_executor = True
+            
+            # Call the node's compute method
+            node.compute()
+            
+            # Reset the flag
+            node._from_workflow_executor = from_executor
+        except AttributeError:
+            # If the node doesn't have the attribute, just call compute directly
+            node.compute()
+    
+    def _reset_processing_states(self, nodes):
+        """
+        Reset processing states for all nodes to avoid stale states.
+        
+        Args:
+            nodes: List of nodes to reset
+        """
+        for node in nodes:
+            # Reset processing flags if node is not actually processing
+            # This handles cases where a node crashed without cleaning up its state
+            if hasattr(node, 'processing'):
+                # Only reset if node is marked as processing but actually isn't
+                if node.processing and (hasattr(node, 'processing_done') and node.processing_done):
+                    print(f"Resetting stale processing state for node: {node.name() if hasattr(node, 'name') else 'Unknown'}")
+                    node.processing = False
     
     def _get_terminal_nodes(self):
         """Find nodes with no outgoing connections"""
@@ -371,6 +442,45 @@ class WorkflowExecutor:
                 processing_nodes.append(node)
         
         return processing_nodes
+    
+    def _mark_downstream_nodes_potentially_dirty(self, dirty_nodes, descendants_map):
+        """
+        Mark all downstream nodes as potentially dirty.
+        This ensures that nodes that depend on changing nodes are included in processing.
+        
+        Args:
+            dirty_nodes: Set of nodes that are known to be dirty/processing
+            descendants_map: Map of node -> list of nodes that depend on it
+            
+        Returns:
+            Set of nodes that were marked as potentially dirty
+        """
+        potentially_dirty = set()
+        for node in dirty_nodes:
+            # Get all descendants (nodes that depend on this node)
+            if node in descendants_map:
+                for descendant in descendants_map[node]:
+                    # Skip Never dirty nodes
+                    recalc_mode = "Dirty if inputs change"  # Default
+                    if hasattr(descendant, 'get_property') and callable(getattr(descendant, 'get_property')):
+                        try:
+                            recalc_mode = descendant.get_property('recalculation_mode')
+                        except:
+                            pass
+                            
+                    if recalc_mode != 'Never dirty':
+                        # Mark as potentially dirty
+                        if hasattr(descendant, 'set_potentially_dirty'):
+                            descendant.set_potentially_dirty(True)
+                            print(f"Marked node {descendant.name()} as potentially dirty (depends on {node.name()})")
+                        potentially_dirty.add(descendant)
+                        
+                        # Recursively mark descendants of this node
+                        if descendant in descendants_map:
+                            more_potentially_dirty = self._mark_downstream_nodes_potentially_dirty([descendant], descendants_map)
+                            potentially_dirty.update(more_potentially_dirty)
+        
+        return potentially_dirty
 
 # Custom event class for safe event posting
 from PySide6.QtCore import QEvent

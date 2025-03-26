@@ -50,7 +50,8 @@ class RegexNode(OllamaBaseNode):
     
     def execute(self):
         """Process the node and return output"""
-        # Get input text using our new property input system
+        # Get input text using our property input system
+        self.set_status("Getting input...")
         input_text = self.get_property_value('input_text')
         
         # Update input preview
@@ -64,6 +65,7 @@ class RegexNode(OllamaBaseNode):
             return {"Result": ""}
         
         try:
+            self.set_status("Processing regex...")
             # Compile regex flags
             flags = 0
             if self.get_property_value('use_dotall').lower() == 'true':
