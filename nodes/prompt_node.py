@@ -21,8 +21,8 @@ class PromptNode(OllamaBaseNode):
     
     # Define class-level signals for UI updates
     class PromptSignals(QObject):
-        update_filtered_preview = Signal(object, str)
-        update_raw_preview = Signal(object, str)
+        update_response = Signal(object, str)
+        update_raw_response = Signal(object, str)
         update_status = Signal(object, str)
     
     def __init__(self):
@@ -36,8 +36,8 @@ class PromptNode(OllamaBaseNode):
         
         # Initialize signals
         self.signals = PromptNode.PromptSignals()
-        self.signals.update_filtered_preview.connect(self._update_filtered_preview, Qt.QueuedConnection)
-        self.signals.update_raw_preview.connect(self._update_raw_preview, Qt.QueuedConnection)
+        self.signals.update_response.connect(self._update_response, Qt.QueuedConnection)
+        self.signals.update_raw_response.connect(self._update_raw_response, Qt.QueuedConnection)
         self.signals.update_status.connect(self._update_status, Qt.QueuedConnection)
         
         # Create basic text properties
@@ -69,19 +69,15 @@ class PromptNode(OllamaBaseNode):
         # Create filtered output port
         self.add_output('Response')
         
-        # Add response preview - exclude from auto-inputs
-        self.exclude_property_from_input('response_preview')
-        self.exclude_property_from_input('raw_response_preview')
+        # Add response properties - exclude from auto-inputs
+        self.exclude_property_from_input('response')
+        self.exclude_property_from_input('raw_response')
         self.exclude_property_from_input('status_info')
-        self.add_text_input('response_preview', 'Filtered Response', '', tab='Response')
-        self.add_text_input('raw_response_preview', 'Raw Response', '', tab='Response')
-        self.add_text_input('status_info', 'Status', 'Ready')
         
-        # Add properties to store the full output values (not just previews)
-        self.exclude_property_from_input('full_raw_response')
-        self.exclude_property_from_input('full_filtered_response')
-        self.add_text_input('full_raw_response', 'Full Raw Response', '')
-        self.add_text_input('full_filtered_response', 'Full Filtered Response', '')
+        # Add simplified response properties that match output names
+        self.add_text_input('response', 'Response', '', tab='Response')
+        self.add_text_input('raw_response', 'Raw Response', '', tab='Response')
+        self.add_text_input('status_info', 'Status', 'Ready')
         
         # Additional prompt node state
         self.stop_requested = False
@@ -94,22 +90,22 @@ class PromptNode(OllamaBaseNode):
         self.set_color(217, 86, 59)
     
     @Slot(object, str)
-    def _update_filtered_preview(self, node, text):
-        """Update the filtered response preview in the main thread"""
+    def _update_response(self, node, text):
+        """Update the filtered response in the main thread"""
         if node != self:
             return
         # Use direct property setting here as we're in the main thread
         if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
-            self.set_property('response_preview', text)
+            self.set_property('response', text)
     
     @Slot(object, str)
-    def _update_raw_preview(self, node, text):
-        """Update the raw response preview in the main thread"""
+    def _update_raw_response(self, node, text):
+        """Update the raw response in the main thread"""
         if node != self:
             return
         # Use direct property setting here as we're in the main thread
         if QCoreApplication.instance() and QThread.currentThread() == QCoreApplication.instance().thread():
-            self.set_property('raw_response_preview', text)
+            self.set_property('raw_response', text)
     
     @Slot(object, str)
     def _update_status(self, node, status):
@@ -141,9 +137,9 @@ class PromptNode(OllamaBaseNode):
         self.start_time = time.time()
         self.set_status("Generating...")
         
-        # Clear previous preview content
-        self.signals.update_filtered_preview.emit(self, "")
-        self.signals.update_raw_preview.emit(self, "")
+        # Clear previous content
+        self.signals.update_response.emit(self, "")
+        self.signals.update_raw_response.emit(self, "")
         
         # Start generation in a separate thread
         Thread(target=self._generation_thread, 
@@ -183,9 +179,9 @@ class PromptNode(OllamaBaseNode):
                 elif filter_mode == 'Extract Pattern':
                     print(f"Check if pattern '{filter_pattern}' matches anything in the response")
             
-            # Store the full output values in properties for serialization
-            self.thread_safe_set_property('full_raw_response', self.response)
-            self.thread_safe_set_property('full_filtered_response', filtered_response)
+            # Store the full output values in properties
+            self.thread_safe_set_property('raw_response', self.response)
+            self.thread_safe_set_property('response', filtered_response)
             
             # Prepare result dictionary
             result_dict = {
@@ -200,12 +196,9 @@ class PromptNode(OllamaBaseNode):
             final_status = f"Complete: {self.token_count} tokens"
             self.signals.update_status.emit(self, final_status)
             
-            # Update both raw and filtered previews with the final content
-            raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-            self.signals.update_raw_preview.emit(self, raw_preview)
-            
-            filtered_preview = filtered_response[:10000] + ('...' if len(filtered_response) > 10000 else '')
-            self.signals.update_filtered_preview.emit(self, filtered_preview)
+            # Update both raw and filtered responses with the final content
+            self.signals.update_raw_response.emit(self, self.response)
+            self.signals.update_response.emit(self, filtered_response)
             
             print(f"Generation thread completed with {self.token_count} tokens")
             
@@ -366,10 +359,9 @@ class PromptNode(OllamaBaseNode):
                                 status_text = f"Generating: {self.token_count} tokens ({tps:.1f}/s)"
                                 self.signals.update_status.emit(self, status_text)
                                 
-                                # Only update the raw preview during streaming
+                                # Only update the raw response during streaming
                                 if self.token_count % 10 == 0:
-                                    raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                                    self.signals.update_raw_preview.emit(self, raw_preview)
+                                    self.signals.update_raw_response.emit(self, self.response)
                         
                         # Check for completion
                         if data.get('done', False):
@@ -378,9 +370,8 @@ class PromptNode(OllamaBaseNode):
                             status_text = f"Complete: {self.token_count} tokens ({tps:.1f}/s)"
                             self.signals.update_status.emit(self, status_text)
                             
-                            # Final update for raw preview
-                            raw_preview = self.response[:10000] + ('...' if len(self.response) > 10000 else '')
-                            self.signals.update_raw_preview.emit(self, raw_preview)
+                            # Final update for raw response
+                            self.signals.update_raw_response.emit(self, self.response)
                             
                             print(f"Generation complete: {self.token_count} tokens in {elapsed:.2f}s ({tps:.1f}/s)")
                     
@@ -402,9 +393,26 @@ class PromptNode(OllamaBaseNode):
         # Call the base class deserialize first
         super(PromptNode, self).deserialize(node_dict, namespace, context)
         
-        # Get the saved output values from properties
-        raw_response = self.get_property('full_raw_response')
-        filtered_response = self.get_property('full_filtered_response')
+        # Handle backward compatibility - check for old property names
+        raw_response = None
+        filtered_response = None
+        
+        # Try to get values from new property names first
+        raw_response = self.get_property('raw_response')
+        filtered_response = self.get_property('response')
+        
+        # If not found, try the old property names
+        if not raw_response:
+            raw_response = self.get_property('full_raw_response')
+            if raw_response:
+                # Migrate the value to the new property
+                self.set_property('raw_response', raw_response)
+        
+        if not filtered_response:
+            filtered_response = self.get_property('full_filtered_response')
+            if filtered_response:
+                # Migrate the value to the new property
+                self.set_property('response', filtered_response)
         
         print(f"PromptNode {self.name()}: Checking saved outputs: raw={bool(raw_response)}, filtered={bool(filtered_response)}")
         
@@ -416,13 +424,6 @@ class PromptNode(OllamaBaseNode):
             self.output_cache['Raw Response'] = raw_response
             self.output_cache['Response'] = filtered_response
             
-            # Set previews
-            raw_preview = raw_response[:10000] + ('...' if len(raw_response) > 10000 else '')
-            self.set_property('raw_response_preview', raw_preview)
-            
-            filtered_preview = filtered_response[:10000] + ('...' if len(filtered_response) > 10000 else '')
-            self.set_property('response_preview', filtered_preview)
-            
             print(f"PromptNode {self.name()}: Restored outputs from properties")
             
             # Set dirty state based on recalculation mode
@@ -433,9 +434,9 @@ class PromptNode(OllamaBaseNode):
     
     def has_valid_cache(self):
         """Check if the prompt node has a valid output cache"""
-        # Check the output properties first
-        raw_response = self.get_property('full_raw_response')
-        filtered_response = self.get_property('full_filtered_response')
+        # Check the output properties
+        raw_response = self.get_property('raw_response')
+        filtered_response = self.get_property('response')
         
         if raw_response and filtered_response:
             return True
