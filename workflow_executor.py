@@ -1,6 +1,6 @@
 import time
 from threading import Thread, Event
-from PySide6.QtCore import QObject, Signal, Qt, Slot, QCoreApplication
+from PySide6.QtCore import QObject, Signal, Qt, Slot, QCoreApplication, QThread
 
 class ExecutorSignalHandler(QObject):
     """Signal handler for workflow executor thread-safe operations"""
@@ -135,7 +135,6 @@ class WorkflowExecutor:
                 print(f"  Node {node_name} depends on: {', '.join(anc_names) if anc_names else 'None'}")
             
             # Find nodes that should be processed
-            # Find nodes that should be processed
             nodes_to_process = set()
             initially_dirty_nodes = set()
 
@@ -170,7 +169,7 @@ class WorkflowExecutor:
                         has_valid_cache = True
                     
                     if has_valid_cache:
-                        # Skip processing for Never dirty with valid cached output
+                        # Skip processing for Never dirty with valid cache
                         print(f"Node {node_name}: Skipping (Never dirty mode with valid cache)")
                         should_process = False
                         # Ensure it's marked not dirty
@@ -234,6 +233,23 @@ class WorkflowExecutor:
                     self._process_node_with_executor_flag(node)
                     processed_count += 1
                     node_processed = True
+                    
+                    # Wait for this node to complete if it's asynchronous
+                    if hasattr(node, 'is_async_node') and node.is_async_node:
+                        print(f"Node {node_name} is asynchronous, waiting for completion...")
+                        
+                        # Wait for the node to complete (up to timeout)
+                        max_wait = 3600  # 1 hour timeout (3600 seconds)
+                        start_time = time.time()
+                        
+                        while hasattr(node, 'processing') and node.processing and time.time() - start_time < max_wait:
+                            print(f"Waiting for async node {node_name} to complete...")
+                            time.sleep(1)  # Check every second
+                        
+                        if hasattr(node, 'processing') and node.processing:
+                            print(f"Timeout waiting for async node {node_name} to complete")
+                        else:
+                            print(f"Async node {node_name} completed")
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
@@ -241,10 +257,7 @@ class WorkflowExecutor:
                     result = (False, f"Error executing node {node_name}: {str(e)}")
                     break
             
-            # Wait for async nodes to complete
-            time.sleep(0.5)  # Brief pause for any async nodes to begin processing
-            
-            # Check which nodes are still processing
+            # Check if any async nodes are still processing
             processing_nodes = self._get_processing_nodes()
             
             if processing_nodes:
@@ -252,27 +265,11 @@ class WorkflowExecutor:
                 for n in processing_nodes:
                     node_name = n.name() if hasattr(n, 'name') and callable(getattr(n, 'name')) else "Unknown"
                     node_names.append(node_name)
-                print(f"Waiting for {len(processing_nodes)} nodes that are still processing: {', '.join(node_names)}")
-                result = (True, f"Workflow started ({len(processing_nodes)} nodes processing)")
-                node_processed = True
-            
-            # Wait for all processing nodes to complete (up to timeout)
-            max_wait = 3600  # 1 hour timeout (3600 seconds)
-            start_time = time.time()
-
-            while processing_nodes and time.time() - start_time < max_wait:
-                print(f"Waiting for {len(processing_nodes)} nodes to complete processing...")
-                time.sleep(1)  # Check every second
-                processing_nodes = self._get_processing_nodes()
-
-            # Check if any nodes were processed
-            if node_processed:
-                if processing_nodes:
-                    print(f"Timeout: {len(processing_nodes)} nodes are still processing")
-                    result = (True, f"Workflow partially complete, {len(processing_nodes)} nodes still running")
-                else:
-                    print(f"Workflow execution completed successfully")
-                    result = (True, f"Workflow executed successfully ({processed_count} nodes processed)")
+                print(f"There are still {len(processing_nodes)} nodes processing: {', '.join(node_names)}")
+                result = (True, f"Workflow partially complete, {len(processing_nodes)} nodes still running")
+            else:
+                print(f"Workflow execution completed successfully")
+                result = (True, f"Workflow executed successfully ({processed_count} nodes processed)")
         
         except Exception as e:
             import traceback

@@ -544,8 +544,12 @@ class OllamaBaseNode(BaseNode):
         connected_node = connected_port.node()
         connected_node_name = connected_node.name() if hasattr(connected_node, 'name') and callable(getattr(connected_node, 'name')) else "Unknown"
         
-        # Process the connected node if it's dirty
-        if hasattr(connected_node, 'dirty') and connected_node.dirty:
+        # Check if we're being called from the workflow executor
+        from_executor = getattr(self, '_from_workflow_executor', False)
+        
+        # Only process the connected node if it's dirty AND we're not in workflow executor mode
+        # This prevents cascading computations outside the workflow executor's control
+        if not from_executor and hasattr(connected_node, 'dirty') and connected_node.dirty:
             print(f"Node {self.name()}: Processing dependency {connected_node_name}")
             connected_node.compute()
         
